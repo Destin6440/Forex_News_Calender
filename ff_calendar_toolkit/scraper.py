@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -12,9 +13,21 @@ from .models import ScrapeContext
 
 
 class ForexFactoryScraper:
-    def __init__(self, console, headless: bool = True) -> None:
+    def __init__(
+        self,
+        console,
+        headless: bool = True,
+        enrich_filter_currencies: list[str] | None = None,
+        enrich_filter_impacts: list[str] | None = None,
+    ) -> None:
         self.console = console
         self.headless = headless
+        self.enrich_filter_currencies = (
+            [c.upper() for c in enrich_filter_currencies] if enrich_filter_currencies else None
+        )
+        self.enrich_filter_impacts = (
+            [i.lower() for i in enrich_filter_impacts] if enrich_filter_impacts else None
+        )
 
     def init_driver(self) -> webdriver.Chrome:
         options = webdriver.ChromeOptions()
@@ -102,6 +115,70 @@ class ForexFactoryScraper:
         self.console.step(f"Parsed {len(data)} raw calendar rows")
         return data
 
+    def _row_matches_filter(self, row: dict) -> bool:
+        if self.enrich_filter_currencies is None and self.enrich_filter_impacts is None:
+            return True
+        currency = (row.get("currency") or "").upper()
+        impact = (row.get("impact") or "").lower()
+        if self.enrich_filter_currencies and currency not in self.enrich_filter_currencies:
+            return False
+        if self.enrich_filter_impacts and impact not in self.enrich_filter_impacts:
+            return False
+        return True
+
+    def enrich_details(self, driver: webdriver.Chrome, rows: list[dict]) -> None:
+        candidates = [r for r in rows if self._row_matches_filter(r) and r.get("detail")]
+        self.console.step(f"Enriching detail for {len(candidates)} filtered events")
+        for idx, row in enumerate(candidates, start=1):
+            event_id = row["detail"].rsplit("=", 1)[-1] if "=" in row["detail"] else None
+            if not event_id:
+                continue
+            try:
+                target = driver.find_element(By.CSS_SELECTOR, f'tr[data-event-id="{event_id}"]')
+            except Exception:
+                continue
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
+                time.sleep(0.3)
+                link = target.find_element(By.CSS_SELECTOR, ".calendar__detail a")
+                driver.execute_script("arguments[0].click();", link)
+                time.sleep(2.5)
+                panel = driver.find_element(By.CSS_SELECTOR, "tr.calendar__details--detail")
+                parsed = self._parse_detail_panel(panel.text)
+                row.update(parsed)
+                # Close panel to keep DOM lean
+                driver.execute_script("arguments[0].click();", link)
+                time.sleep(0.3)
+            except Exception as exc:
+                self.console.step(f"Detail enrich skipped for {event_id}: {exc}")
+                continue
+            if idx % 10 == 0:
+                self.console.step(f"Enriched {idx}/{len(candidates)} events")
+
+    @staticmethod
+    def _parse_detail_panel(text: str) -> dict:
+        if "History" not in text:
+            return {}
+        history_section = text.split("History", 1)[1]
+        for raw_line in history_section.splitlines():
+            line = raw_line.strip()
+            if not line or line.lower().startswith(("more", "related", "exit", "currently")):
+                continue
+            # Try parse "Mon DD, YYYY actual forecast previous" — 2 or 3 numeric tokens after date
+            match = re.match(
+                r"^[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\s+(.+)$",
+                line,
+            )
+            if not match:
+                continue
+            tokens = match.group(1).split()
+            # Latest row: future event = [forecast, previous]; past = [actual, forecast, previous]
+            if len(tokens) == 2:
+                return {"forecast": tokens[0], "previous": tokens[1]}
+            if len(tokens) >= 3:
+                return {"actual": tokens[0], "forecast": tokens[1], "previous": tokens[2]}
+        return {}
+
     def resolve_month(self, month_param: str) -> tuple[str, str, int]:
         param = month_param.lower()
         now = datetime.now()
@@ -130,6 +207,7 @@ class ForexFactoryScraper:
             self.console.step(f"Browser timezone detected as {source_timezone}")
             self.scroll_to_end(driver)
             rows = self.parse_table(driver, month_name)
+            self.enrich_details(driver, rows)
             context = ScrapeContext(
                 month_param=month_param.lower(),
                 month_name=month_name,

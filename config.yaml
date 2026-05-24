@@ -28,18 +28,18 @@ alerts:
   connectors:
     - id: discord_main
       type: discord
-      enabled: true
+      enabled: false
       webhook_url_env: DISCORD_WEBHOOK_URL
 
     - id: telegram_main
       type: telegram
-      enabled: false
+      enabled: true
       bot_token_env: TELEGRAM_BOT_TOKEN
       chat_id_env: TELEGRAM_CHAT_ID
 
     - id: webhook_main
       type: webhook
-      enabled: true
+      enabled: false
       url_env: ALERT_WEBHOOK_URL
       auth_header_name: Authorization
       auth_header_env: ALERT_WEBHOOK_AUTH

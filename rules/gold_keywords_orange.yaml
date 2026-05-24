@@ -1,0 +1,35 @@
+name: gold-keywords-orange
+enabled: true
+match:
+  currencies:
+    - USD
+    - EUR
+  impacts:
+    - orange
+  event_names: []
+  event_keywords:
+    - fed
+    - fomc
+    - powell
+    - ecb
+    - lagarde
+    - cpi
+    - ppi
+    - inflation
+    - nfp
+    - non-farm
+    - jobs
+    - unemployment
+    - retail sales
+    - gdp
+    - pce
+    - jackson hole
+    - rate
+    - crude oil
+    - oil inventories
+    - opec
+  weekdays: []
+trigger:
+  minutes_before: 30
+deliver:
+  - telegram_main

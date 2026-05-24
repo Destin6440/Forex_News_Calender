@@ -8,6 +8,7 @@ services:
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     environment:
       FF_RUN_MODE: schedule
+      CRON_SCHEDULE: "0 */6 * * *"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -26,6 +27,7 @@ services:
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     environment:
       FF_RUN_MODE: alerts-schedule
+      FF_ALERT_SCHEDULE_PRESET: every_1_minute
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

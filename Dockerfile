@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x scripts/setup_env.sh scripts/run_scraper.sh scripts/run_alerts.sh scripts/view_data.sh docker/entrypoint.sh
+RUN chmod +x scripts/setup_env.sh docker/entrypoint.sh
 
 ENTRYPOINT ["./docker/entrypoint.sh"]
 CMD []
