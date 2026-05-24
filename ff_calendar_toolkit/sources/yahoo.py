@@ -8,30 +8,19 @@ since it needs an extra dep and is rate-limited harder than RSS.
 from __future__ import annotations
 
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
 
+from .._http import http_get
 from ..models import NewsItem
 
 RSS_BASE = "https://feeds.finance.yahoo.com/rss/2.0/headline"
 SOURCE_NAME = "yahoo"
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-
 def _http_get(url: str, timeout: int = 30) -> bytes:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": _USER_AGENT, "Accept": "application/rss+xml,application/xml,*/*"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return http_get(url, timeout=timeout, accept="application/rss+xml,application/xml,*/*")
 
 
 def _ticker_url(ticker: str, region: str = "US", lang: str = "en-US") -> str:

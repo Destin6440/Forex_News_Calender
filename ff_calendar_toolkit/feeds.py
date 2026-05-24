@@ -9,11 +9,11 @@ Replaces the Selenium-based scraper for bulk calendar data:
 
 from __future__ import annotations
 
-import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterable, Literal
 
+from ._http import http_get
 from .models import ScrapeContext
 
 FEED_BASE = "https://nfs.faireconomy.media"
@@ -31,18 +31,11 @@ IMPACT_MAP = {
     "holiday": "gray",
 }
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
 Week = Literal["last", "this", "next"]
 
 
 def _http_get(url: str, timeout: int = 30) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT, "Accept": "application/xml,text/xml,*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return http_get(url, timeout=timeout, accept="application/xml,text/xml,*/*")
 
 
 def _format_feed_date(date_text: str, time_text: str) -> tuple[str, str]:

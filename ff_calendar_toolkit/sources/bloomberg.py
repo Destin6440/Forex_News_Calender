@@ -12,31 +12,20 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
 
+from .._http import http_get
 from ..models import NewsItem
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 GNEWS_RSS_BASE = "https://news.google.com/rss/search"
 SOURCE_NAME = "bloomberg"
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-
 def _http_get(url: str, timeout: int = 30) -> bytes:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": _USER_AGENT, "Accept": "application/json,application/xml,*/*"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return http_get(url, timeout=timeout, accept="application/json,application/xml,*/*")
 
 
 def _parse_iso(dt_str: str) -> str:
