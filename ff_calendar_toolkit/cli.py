@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     test_notify.add_argument("--rules-dir", help="Directory containing alert rule YAML files")
     test_notify.add_argument("--state-dir", help="Directory for alert state")
 
+    subparsers.add_parser(
+        "news-check",
+        help="Fetch news from Yahoo+Bloomberg sources, dedup, post to Telegram (raw + analyzed)",
+    )
+
     schedule_info = subparsers.add_parser(
         "schedule-info", help="Print the effective cron expression"
     )
@@ -84,7 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _prepare_args(argv: list[str] | None) -> list[str]:
     args = list(argv) if argv is not None else sys.argv[1:]
-    if not args or args[0] not in {"scrape", "view", "alerts-check", "schedule-info", "alerts-schedule-info", "test-notify"}:
+    if not args or args[0] not in {
+        "scrape",
+        "view",
+        "alerts-check",
+        "news-check",
+        "schedule-info",
+        "alerts-schedule-info",
+        "test-notify",
+    }:
         return ["scrape", *args]
     return args
 
@@ -135,6 +148,32 @@ def main(argv: list[str] | None = None) -> int:
         from .alerts.service import AlertService
 
         return AlertService(console).run(options)
+
+    if args.command == "news-check":
+        from .analyzer import AnalyzerConfig, AnalyzerError
+        from .dedup import SeenStore
+        from .news_service import NewsService, NewsServiceOptions
+        from .telegram import TelegramSender
+
+        opts = NewsServiceOptions.from_env()
+        if not opts.raw_chat_id:
+            console.error("TELEGRAM_RAW_CHAT_ID is not set")
+            return 1
+        try:
+            analyzer_cfg = AnalyzerConfig.from_env() if opts.enable_analysis else None
+        except AnalyzerError as exc:
+            console.error(f"Analyzer disabled: {exc}")
+            analyzer_cfg = None
+        telegram = TelegramSender.from_env()
+        with SeenStore(opts.dedup_db_path, ttl_days=opts.dedup_ttl_days) as seen:
+            stats = NewsService(opts, telegram, seen, console, analyzer_config=analyzer_cfg).run()
+        console.success(
+            f"news-check done: fetched={stats.fetched} new={stats.new_after_dedup} "
+            f"raw={stats.raw_posted}/{stats.raw_failed} "
+            f"analyzed={stats.analyzed_posted}/{stats.analysis_failed} "
+            f"below_threshold={stats.analysis_below_threshold}"
+        )
+        return 0 if not stats.errors else 1
 
     options = build_run_options(args)
     from .service import ScrapeService

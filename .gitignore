@@ -10,3 +10,9 @@ env/
 .codex
 news/
 state/
+
+# beads — DB derived from issues.jsonl
+.beads/beads.db
+.beads/beads.db-wal
+.beads/beads.db-shm
+.beads/last-touched

@@ -63,3 +63,18 @@ class WriteResult:
     last_run_paths: list[Path]
     monthly_paths: list[Path]
     history_paths: list[Path]
+
+
+@dataclass(frozen=True)
+class NewsItem:
+    """Normalized news record consumed by dedup, analyzer, and Telegram fanout.
+
+    `published_at` is an ISO-8601 UTC timestamp; `tickers` is empty for general items.
+    """
+
+    source: str
+    title: str
+    url: str
+    published_at: str
+    summary: str = ""
+    tickers: tuple[str, ...] = ()
