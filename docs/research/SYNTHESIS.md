@@ -129,9 +129,9 @@ In rough priority order (highest leverage first):
 
 3. ~~**Add GDELT tone passthrough**~~ — invalidated 2026-05-24 fixture inspection. `ArtList` mode (what we use) returns no tone field; tone requires a second GDELT request via `ArtTonality` mode or per-article enrichment via `GKG`. Cost/complexity probably exceeds value vs. existing LLM analyzer. Consider only if LLM costs become a problem.
 
-4. **(Optional) FF news via GDELT**. Add `bloomberg.fetch_gdelt(domain="forexfactory.com")` variant. Probably low yield given FF is itself an aggregator — try once, measure, drop if redundant.
+4. ~~**(Optional) FF news via GDELT**~~ — measured 2026-05-24, dropped. `domain:forexfactory.com` query against GDELT returns `{}` over 90 days with no keyword filter. GDELT does not index forexfactory.com (likely robots.txt exclusion or GDELT's aggregator/forum filter). Do not retry.
 
-5. **(Optional) Body extraction** with `trafilatura` — only if LLM analyzer accuracy is limited by headline-only context. Adds a fetch per item, slows pipeline, increases ToS surface. Measure first.
+5. ~~**(Optional) Body extraction** with `trafilatura`~~ — measured 2026-05-24, dropped. Audit of `analyzer._user_prompt` shows GNews and Yahoo already send description text to the LLM; only the GDELT path is headline-only. GDELT's article targets are Bloomberg paywalled URLs — trafilatura would extract paywall stubs, not body text. Adds dependency + per-item fetch latency for minimal real signal. Revisit only if LLM accuracy on GDELT items becomes a measurable problem.
 
 6. **(Skip) FF news HTML scraper**. Both research docs push it; both research docs underestimate compliance risk. GDELT + Yahoo + Bloomberg cover the macro signal.
 
