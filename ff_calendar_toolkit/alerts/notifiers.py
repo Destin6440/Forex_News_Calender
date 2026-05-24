@@ -108,15 +108,27 @@ class NotifierFactory:
 
 def render_message(prefix: str, rule: AlertRule, event: AlertEvent) -> str:
     payload = event.payload
-    return (
+    actual = payload.get("actual") or "—"
+    forecast = payload.get("forecast") or "—"
+    previous = payload.get("previous") or "—"
+    base = (
         f"{prefix}\n"
         f"Rule: {rule.name}\n"
         f"Event: {payload.get('event', '')}\n"
         f"Currency: {payload.get('currency', '')}\n"
         f"Impact: {payload.get('impact', '')}\n"
         f"When: {payload.get('date', '')} {payload.get('time', '')} {payload.get('timezone', '')}\n"
+        f"Actual: {actual}  Forecast: {forecast}  Previous: {previous}\n"
         f"Detail: {payload.get('detail', '')}"
     )
+    sentiment_parts = []
+    if payload.get("math_sentiment"):
+        sentiment_parts.append(payload["math_sentiment"])
+    if payload.get("llm_sentiment"):
+        sentiment_parts.append(payload["llm_sentiment"])
+    if sentiment_parts:
+        base += "\nSentiment — " + " | ".join(sentiment_parts)
+    return base
 
 
 def _required_env(env_name) -> str:

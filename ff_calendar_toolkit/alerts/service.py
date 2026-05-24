@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from ff_calendar_toolkit.console import AppConsole
 from ff_calendar_toolkit.models import AlertOptions
 
+from .enrichers import MathSentimentEnricher, OpenAIEnricher
 from .events import load_alert_events
 from .matcher import build_dedup_key, event_matches_rule, event_should_trigger, preview_match
 from .notifiers import NotificationError, NotifierFactory
@@ -20,6 +21,10 @@ class AlertService:
         rules = load_rules(options.rules_dir)
         events = load_alert_events(options.output_dir)
         notifier_factory = NotifierFactory(options)
+        enrichers = [MathSentimentEnricher(), OpenAIEnricher(self.console)]
+        for enricher in enrichers:
+            if getattr(enricher, "enabled", True):
+                self.console.step(f"Enricher active: {type(enricher).__name__}")
         now = datetime.now(timezone.utc)
 
         self.console.step(
@@ -41,6 +46,9 @@ class AlertService:
 
                 triggered += 1
                 dedup_key = build_dedup_key(rule, event)
+                event_to_send = event
+                for enricher in enrichers:
+                    event_to_send = enricher.enrich(event_to_send)
                 for connector_id in rule.deliver:
                     preview = preview_match(
                         rule,
@@ -59,7 +67,7 @@ class AlertService:
                     if state_store.is_sent(state, dedup_key, connector_id):
                         continue
                     try:
-                        notifier_factory.send(connector_id, rule, event)
+                        notifier_factory.send(connector_id, rule, event_to_send)
                         state_store.mark_sent(state, dedup_key, connector_id, preview_payload)
                         delivered += 1
                         self.console.success(
