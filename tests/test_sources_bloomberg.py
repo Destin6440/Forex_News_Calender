@@ -78,11 +78,28 @@ def test_fetch_gdelt_passes_query_and_returns_items(monkeypatch):
         return GDELT_JSON
 
     monkeypatch.setattr(bloomberg, "_http_get", fake_get)
-    items = bloomberg.fetch_gdelt(keywords=("forex", "fed"))
+    items = bloomberg.fetch_gdelt(keywords=("forex", "inflation"))
     assert len(items) == 2
     assert "domain%3Abloomberg.com" in captured["url"]
     assert "forex" in captured["url"]
-    assert "fed" in captured["url"]
+    assert "inflation" in captured["url"]
+
+
+def test_fetch_gdelt_default_keywords_meet_gdelt_phrase_minimum():
+    """GDELT rejects quoted phrases shorter than 4 chars with
+    "The specified phrase is too short." A regression here means the default
+    Bloomberg ingestion path silently fetches zero items in production.
+    """
+    import inspect
+    sig = inspect.signature(bloomberg.fetch_gdelt)
+    defaults = sig.parameters["keywords"].default
+    for kw in defaults:
+        assert len(kw) >= 4, f"GDELT rejects <4-char quoted phrases: {kw!r}"
+
+    sig_all = inspect.signature(bloomberg.fetch_all)
+    defaults_all = sig_all.parameters["keywords"].default
+    for kw in defaults_all:
+        assert len(kw) >= 4, f"GDELT rejects <4-char quoted phrases: {kw!r}"
 
 
 def test_fetch_gdelt_on_error_returns_empty(monkeypatch):

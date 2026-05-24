@@ -95,7 +95,7 @@ def _parse_gdelt(json_bytes: bytes) -> list[NewsItem]:
 
 
 def fetch_gdelt(
-    keywords: Iterable[str] = ("forex", "currency", "fed", "ecb", "gold"),
+    keywords: Iterable[str] = ("forex", "currency", "dollar", "euro", "inflation", "gold"),
     domain: str = "bloomberg.com",
     timespan: str = "1d",
     max_records: int = 50,
@@ -163,7 +163,7 @@ def fetch_gnews(
 
 
 def fetch_all(
-    keywords: Iterable[str] = ("forex", "currency", "fed", "ecb", "gold"),
+    keywords: Iterable[str] = ("forex", "currency", "dollar", "euro", "inflation", "gold"),
     on_error=None,
 ) -> list[NewsItem]:
     """Both GDELT and Google News, deduped by URL."""

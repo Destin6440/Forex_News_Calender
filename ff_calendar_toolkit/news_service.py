@@ -47,7 +47,7 @@ class NewsServiceOptions:
         return cls(
             yahoo_tickers=_split_csv(env.get("NEWS_YAHOO_TICKERS", "GLD,GC=F,DXY,USDJPY=X,EURUSD=X")),
             bloomberg_keywords=_split_csv(
-                env.get("NEWS_BLOOMBERG_KEYWORDS", "forex,fed,ecb,gold,inflation")
+                env.get("NEWS_BLOOMBERG_KEYWORDS", "forex,currency,dollar,euro,inflation,gold")
             ),
             raw_chat_id=env.get("TELEGRAM_RAW_CHAT_ID", ""),
             analysis_chat_id=env.get("TELEGRAM_ANALYSIS_CHAT_ID", ""),
