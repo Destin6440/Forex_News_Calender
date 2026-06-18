@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -27,3 +28,9 @@ app = FastAPI()
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(ROOT / "index.html", media_type="text/html")
+
+
+@app.get("/api/news")
+def api_news() -> JSONResponse:
+    now_ms = int(time.time() * 1000)
+    return JSONResponse(load_dashboard_news(NEWS_DIR, now_ms))
