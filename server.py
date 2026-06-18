@@ -76,4 +76,9 @@ def cmc_quotes(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Defaults to 127.0.0.1 for local dev (keeps the keyed proxies off the network).
+    # In Docker, set DASHBOARD_HOST=0.0.0.0 so the published port is reachable — there
+    # the safety boundary is the published-port/network config, not the bind address.
+    host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
+    port = int(os.environ.get("DASHBOARD_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
