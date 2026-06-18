@@ -44,6 +44,10 @@ def _passthrough(resp: requests.Response) -> JSONResponse:
     return JSONResponse(body, status_code=resp.status_code)
 
 
+# These proxies forward arbitrary client query params upstream with the server's
+# API key attached. That is safe only because the app binds to 127.0.0.1 (see the
+# __main__ block) — do NOT expose it on a public interface without an allowlist of
+# param names and rate limiting, or the API quota becomes a free open relay.
 @app.get("/api/td/quote")
 def td_quote(request: Request) -> JSONResponse:
     params = dict(request.query_params)
