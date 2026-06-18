@@ -67,3 +67,9 @@ def cmc_quotes(request: Request) -> JSONResponse:
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
     resp = requests.get(CMC_QUOTES_URL, params=params, headers=headers, timeout=15)
     return _passthrough(resp)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
