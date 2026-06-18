@@ -216,6 +216,10 @@ function fmtPrice(n) {
   return n.toFixed(7);
 }
 
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 let cachedNews = [];
 
 async function buildNews(force) {
@@ -253,7 +257,7 @@ async function buildNews(force) {
     const t = new Date(n.scheduledTime);
     const timeStr = t.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}) + ' ' + t.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false});
     const impactLabel = n.impact === 'red' ? 'High' : 'Med';
-    item.innerHTML = `<div class="news-folder">▶</div><div class="news-body"><div class="news-title"><span class="news-impact">${impactLabel}</span>${n.title} (${n.currency})</div><div class="news-meta">${n.source} · ${n.cat} · ${timeStr}</div><div class="news-timer" id="timer-${idx}"></div></div>`;
+    item.innerHTML = `<div class="news-folder">▶</div><div class="news-body"><div class="news-title"><span class="news-impact">${impactLabel}</span>${esc(n.title)} (${esc(n.currency)})</div><div class="news-meta">${esc(n.source)} · ${esc(n.cat)} · ${timeStr}</div><div class="news-timer" id="timer-${idx}"></div></div>`;
     list.appendChild(item);
   });
   list.style.animation = 'none';
