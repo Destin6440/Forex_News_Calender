@@ -45,6 +45,8 @@
   .sr-hit-badge { background: #10b981; color: #000; font-size: 10px; font-weight: 800; padding: 3px 7px; border-radius: 4px; display: none; letter-spacing: 0.4px; white-space: nowrap; }
   .sr-hit-badge.resistance { background: #ef4444; color: #fff; }
   .sr-hit-badge.show { display: inline-flex; align-items: center; animation: badgePulse 2s infinite; }
+  .sim-badge { background: #475569; color: #cbd5e1; font-size: 9px; font-weight: 800; padding: 3px 6px; border-radius: 4px; display: none; letter-spacing: 0.5px; white-space: nowrap; }
+  .sim-badge.show { display: inline-flex; align-items: center; }
 
   .card-header { display: flex; align-items: flex-start; justify-content: space-between; height: 38px; flex-shrink: 0; margin-bottom: 2px; }
   .symbol-name { font-size: 16px; font-weight: 800; color: #fff; letter-spacing: 0.3px; line-height: 1; }
@@ -442,6 +444,7 @@ function buildGrid() {
         <div class="pill-wrap">
           <div class="breakout-badge" id="badge-${asset.id}">BREAKOUT</div>
           <div class="sr-hit-badge" id="sr-badge-${asset.id}">S/R HIT</div>
+          <div class="sim-badge" id="sim-badge-${asset.id}">SIM</div>
         </div>
         <div class="price-wrap">
           <div class="price" id="price-${asset.id}">—</div>
@@ -599,30 +602,30 @@ async function loadAsset(asset, cgPrices, cgMarkets, cmcMap, cmcQuotes) {
   const state = assetState.get(asset.id) || {};
   let data = null, price = null, change24h = 0;
 
-  // === TWELVE DATA: Stocks, Forex, Indices, Commodities ===
+  // === UNIFIED MARKET ENDPOINT: Stocks, Forex, Indices, Commodities (TD + fallbacks) ===
   if (asset.tdSymbol) {
-    // Try time series first (gets us price + chart data in one call)
-    const tdSeries = await fetchTDTimeSeries(asset.tdSymbol, '5min', 300);
-    if (tdSeries && tdSeries.values && tdSeries.values.length > 0) {
-      data = tdToCandles(tdSeries);
-      price = parseFloat(tdSeries.values[0].close);
-      const prevClose = parseFloat(tdSeries.values[tdSeries.values.length - 1].close);
-      change24h = prevClose ? ((price - prevClose) / prevClose * 100) : 0;
-    } else {
-      // Fallback to quote if time series fails
-      const tdQuote = await fetchTDQuote(asset.tdSymbol);
-      if (tdQuote && tdQuote.close) {
-        price = parseFloat(tdQuote.close);
-        change24h = parseFloat(tdQuote.percent_change || 0);
-        // Generate simulated candles from quote price
-        data = generateSimulatedCandles(price, 300);
-      } else if (tdQuote && tdQuote.price) {
-        // Some TD endpoints return 'price' instead of 'close'
-        price = parseFloat(tdQuote.price);
-        change24h = parseFloat(tdQuote.change || 0);
-        data = generateSimulatedCandles(price, 300);
+    const assetClass = asset.type; // forex|stock|index|commodity
+    let md = null;
+    try {
+      const r = await fetch(`/api/market/${asset.id}?td_symbol=${encodeURIComponent(asset.tdSymbol)}&asset_class=${encodeURIComponent(assetClass)}`);
+      if (r.ok) md = await r.json();
+    } catch (e) { md = null; }
+
+    if (md && md.source) {
+      price = md.price;
+      change24h = md.change24h || 0;
+      if (md.candles && md.candles.length >= 2) {
+        // Real intraday history (TwelveData).
+        data = md.candles;
+        tdBuffers.set(asset.id, md.candles);
+      } else {
+        // Source gave price only (frankfurter/finnhub). Accumulate a rolling buffer
+        // so the chart builds real shape over time instead of faking 300 candles.
+        data = pushTdTick(asset, price);
       }
+      assetState.set(asset.id, { ...(assetState.get(asset.id) || {}), simulated: false });
     }
+    // md.source === null falls through to the simulation block below (with SIM tag).
   }
 
   // === COINGECKO: Major Crypto ===
@@ -666,6 +669,7 @@ async function loadAsset(asset, cgPrices, cgMarkets, cmcMap, cmcQuotes) {
     data = generateSimulatedCandles(state.lastPrice || asset.basePrice, 300);
     price = data[data.length-1].value;
     change24h = ((Math.random()-0.5)*2);
+    assetState.set(asset.id, { ...(assetState.get(asset.id) || {}), simulated: true });
   }
   if (!data) {
     data = generateSimulatedCandles(price || asset.basePrice, 300);
@@ -706,6 +710,11 @@ function loadAssetFromData(asset, data, price, change24h) {
   if (chEl) {
     chEl.textContent = (change24h>=0?'+':'') + change24h.toFixed(2) + '%';
     chEl.className = 'change ' + (change24h>=0?'up':'down');
+  }
+  const simBadge = document.getElementById(`sim-badge-${asset.id}`);
+  if (simBadge) {
+    const isSim = (assetState.get(asset.id) || {}).simulated;
+    simBadge.classList.toggle('show', !!isSim);
   }
 
   const supEl = document.getElementById(`sup-${asset.id}`);
@@ -869,7 +878,7 @@ function loadAssetFromData(asset, data, price, change24h) {
     queueBanner(alertText, alertColor);
   }
 
-  assetState.set(asset.id, { ...state, lastPrice: price, lastEma200, support, resistance, d1Bias, h1Bias, change24h });
+  assetState.set(asset.id, { ...(assetState.get(asset.id) || state), lastPrice: price, lastEma200, support, resistance, d1Bias, h1Bias, change24h });
 }
 function generateSimulatedCandles(basePrice, count = 200) {
   const data = [];
@@ -886,6 +895,24 @@ function generateSimulatedCandles(basePrice, count = 200) {
     data.push({ time: t, value: price, high, low });
   }
   return data;
+}
+
+// Rolling buffer for TD assets whose fallback source gives price-only (no candles).
+const tdBuffers = new Map();
+
+function pushTdTick(asset, price) {
+  const now = Math.floor(Date.now() / 1000);
+  let buf = tdBuffers.get(asset.id);
+  if (!buf || buf.length < 2) {
+    // Seed a short flat-ish baseline from last-known/base price so the chart renders.
+    const seed = (assetState.get(asset.id) || {}).lastPrice || price;
+    buf = [];
+    for (let i = 20; i > 0; i--) buf.push({ time: now - i * 300, value: seed, high: seed, low: seed });
+  }
+  buf = buf.slice(-299);
+  buf.push({ time: now, value: price, high: price, low: price });
+  tdBuffers.set(asset.id, buf);
+  return buf;
 }
 
 // Rolling candle buffer per WS asset: [{time, value, high, low}]
