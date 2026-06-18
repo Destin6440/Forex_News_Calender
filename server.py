@@ -9,6 +9,7 @@ import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+from ff_calendar_toolkit.market_data import fetch_market
 from ff_calendar_toolkit.news_api import load_dashboard_news
 from ff_calendar_toolkit.runtime import load_env_file
 
@@ -62,6 +63,15 @@ def td_time_series(request: Request) -> JSONResponse:
     params["apikey"] = TD_API_KEY
     resp = requests.get(f"{TD_BASE}/time_series", params=params, timeout=15)
     return _passthrough(resp)
+
+
+@app.get("/api/market/{asset_id}")
+def api_market(asset_id: str, td_symbol: str, asset_class: str) -> JSONResponse:
+    data = fetch_market(asset_id, td_symbol, asset_class)
+    if data is None:
+        # Client treats a null source as "simulate + tag SIM".
+        return JSONResponse({"source": None}, status_code=200)
+    return JSONResponse(data)
 
 
 @app.get("/api/cmc/quotes")
