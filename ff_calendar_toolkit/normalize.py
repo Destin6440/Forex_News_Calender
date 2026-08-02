@@ -35,21 +35,31 @@ def convert_time_zone(
     time_str: str,
     from_zone_str: str | None,
     to_zone_str: str | None,
-) -> str:
+) -> tuple[str, str, str]:
+    """Convert an event to the target timezone.
+
+    Returns (time, date, day). The date and day shift too when the
+    conversion crosses midnight.
+    """
     if not time_str or not date_str or not from_zone_str or not to_zone_str:
-        return time_str
+        return time_str, date_str, ""
 
     if time_str.lower() in ["all day", "tentative"]:
-        return time_str
+        return time_str, date_str, ""
 
     try:
         from_zone = pytz.timezone(from_zone_str)
         to_zone = pytz.timezone(to_zone_str)
         naive_dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %I:%M%p")
         localized_dt = from_zone.localize(naive_dt)
-        return localized_dt.astimezone(to_zone).strftime("%H:%M")
+        converted = localized_dt.astimezone(to_zone)
+        return (
+            converted.strftime("%H:%M"),
+            converted.strftime("%d/%m/%Y"),
+            converted.strftime("%a"),
+        )
     except Exception:
-        return time_str
+        return time_str, date_str, ""
 
 
 def filter_row(row: dict, allowed_currencies: list[str], allowed_impacts: list[str]):
@@ -92,11 +102,12 @@ def normalize_rows(
         if len(row) == 1:
             continue
 
-        new_row["day"] = current_day
-        new_row["date"] = current_date
-        new_row["time"] = convert_time_zone(
+        converted_time, converted_date, converted_day = convert_time_zone(
             current_date, current_time, source_timezone, target_timezone
         )
+        new_row["time"] = converted_time
+        new_row["date"] = converted_date
+        new_row["day"] = converted_day or current_day
         new_row["timezone"] = target_timezone or source_timezone or ""
         new_row["currency"] = row.get("currency", "")
         new_row["impact"] = row.get("impact", "")
