@@ -1,321 +1,114 @@
-# Forex Factory Calendar Scraper & Alert System
+# Forex Factory Calendar Database
 
-Python scraper for the [Forex Factory](https://www.forexfactory.com/calendar) economic calendar. Pulls monthly events into structured CSV/JSON, filters by currency and impact, converts timezones, and fires configurable pre-event alerts to Discord, Telegram, or any HTTP webhook.
+A local-first, repeatable calendar ingestion toolkit based on **fizahkhalid/forex_factory_calendar_news_scraper**. It builds a canonical SQLite database for research and backtesting; it does not execute trades. The original MIT license and attribution are preserved in [`LICENSE`](LICENSE).
 
-## Features
+## Coverage and provenance
 
-- Scrapes the full FF economic calendar — currency, impact, time, event name, detail URL
-- Filter by currency (USD, EUR, GBP, CAD, JPY, ...) and impact level (high/medium/low)
-- Converts all event times to your local timezone
-- Stores data in three tiers: last run, monthly canonical, and timestamped history
-- Rule-based alerts: match events by currency, impact, keywords, exact name, or weekday
-- Fires alerts N minutes before each matched event
-- Delivers to Discord webhooks, Telegram bots, or any HTTPS endpoint
-- Runs unattended via Docker Compose with built-in scheduling
-- Optional Streamlit UI for browsing data and editing rules live
+The bootstrap source is the MIT-licensed [Ehsanrs2 Forex Factory Calendar dataset](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar), documented by its publisher as covering **2007-01-01 through 2025-04-07**. Later gaps are read from ordinary monthly Forex Factory pages with Selenium, and current/revised events from Forex Factory's [public weekly JSON export](https://nfs.faireconomy.media/ff_calendar_thisweek.json). The toolkit retains every currency and red, orange, yellow, and gray event. Filtering is query-time only.
 
-## Quickstart
+Source availability controls achievable coverage. Forex Factory or Hugging Face may rate-limit, change markup, or show a security challenge. The program never bypasses those controls: the affected month remains incomplete, `sync_state.json` is not advanced, and the command fails clearly. Never interpret the advertised archive range as proof that your local database is complete—`validate --strict` and `data/dataset_manifest.json` are authoritative.
 
-**Docker (recommended)**
+## Clean installation
+
+Python 3.11+ and Chrome/Chromium with a compatible driver are recommended.
 
 ```bash
-cp .env.example .env
-# add connector secrets to .env, enable connectors in config.yaml
-./scripts/refresh_docker.sh refresh
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m ff_calendar_toolkit.cli sync
+python -m ff_calendar_toolkit.cli validate --strict
 ```
 
-That builds the image, starts the scraper scheduler and the alert checker, and prints their status. Common management commands:
+On Windows PowerShell, replace activation with:
 
-```bash
-./scripts/refresh_docker.sh restart   # restart without rebuilding
-./scripts/refresh_docker.sh down      # stop and remove containers
-./scripts/refresh_docker.sh status    # show running containers
-docker compose logs -f alerts         # tail alert logs
-docker compose logs -f scraper        # tail scraper logs
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
-**Local**
-
-```bash
-./scripts/setup_env.sh
-cp .env.example .env
-./scripts/run.sh scrape
-```
+Generated databases, manifests, state, and exports live under `data/` and are intentionally ignored by Git.
 
 ## Commands
 
 ```bash
-python -m ff_calendar_toolkit.cli scrape           # scrape now
-python -m ff_calendar_toolkit.cli alerts-check     # check alerts now
-python -m ff_calendar_toolkit.cli test-notify      # verify notification delivery
-python -m ff_calendar_toolkit.cli view             # open the Streamlit UI
+# Download and import the archive (or use --archive-file legitimate.csv)
+python -m ff_calendar_toolkit.cli bootstrap
+
+# Fetch ordinary monthly pages; "today" is accepted for --end
+python -m ff_calendar_toolkit.cli backfill --start 2025-04-08 --end today
+
+# Upsert current/revised events from the public weekly export
+python -m ff_calendar_toolkit.cli update
+
+# One repeatable command: bootstrap, gaps/recent/upcoming, update, validation, exports
+python -m ff_calendar_toolkit.cli sync
+
+python -m ff_calendar_toolkit.cli validate --strict
+python -m ff_calendar_toolkit.cli export --format csv parquet
 ```
 
----
+### Saved-HTML recovery
 
-## Scraping
-
-### What gets scraped
-
-Each event row contains:
-
-| Field | Example |
-|---|---|
-| `currency` | `USD` |
-| `impact` | `red` |
-| `date` | `2025-01-15` |
-| `time` | `13:30` |
-| `event` | `Core CPI m/m` |
-| `detail` | `https://www.forexfactory.com/...` |
-| `timezone` | `Asia/Karachi` |
-| `scraped_at` | `2025-01-14T08:00:00` |
-
-### Filtering
-
-Control which events are stored via `config.yaml`:
-
-```yaml
-allowed_currencies:
-  - USD
-  - EUR
-  - GBP
-  - CAD
-
-allowed_impacts:
-  - red      # high impact
-  - orange   # medium impact
-  - gray     # low impact / holidays
-```
-
-Override at runtime with CLI flags:
+If an ordinary request displays CAPTCHA, Cloudflare, or another verification page, stop. Using a normal browser, legitimately open the calendar month and save the rendered calendar page. Then import it without bypassing the control:
 
 ```bash
-python -m ff_calendar_toolkit.cli scrape --currencies USD EUR --impacts red orange
+python -m ff_calendar_toolkit.cli import-html saved_calendar.html --period 2025-05
+# Or put files such as 2025-05.html in a directory:
+python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 --html-directory saved-pages
 ```
 
-### Month selection
+Verification pages, malformed HTML, and empty calendars are rejected. Failed months remain `incomplete` and are retried; rerun `sync` after supplying legitimate input or after source access recovers.
 
-```yaml
-months:
-  - this     # current month
-  - next     # next month
-```
+## Canonical data and identity
 
-Or pass a specific month:
+`data/forex_factory.sqlite` is canonical. The `events` table includes:
+
+- identity: `event_key`, `source_event_id`
+- event: `event_name`, `event_name_normalized`, `currency`, `impact_color`, `impact_level`
+- schedule: `date_et`, `time_et`, `datetime_et`, `datetime_utc`, `all_day`
+- release values: `actual`, `forecast`, `previous`
+- provenance: `source_url`, `source_type`, `source_period`, `raw_impact`, `raw_date`, `raw_time`
+- audit times: `first_seen_at`, `last_seen_at`, `scraped_at`
+
+Times use the IANA `America/New_York` zone and are converted to UTC using real daylight-saving rules. An upstream event ID is preferred. Otherwise, a SHA-256 key is deterministically derived from Eastern date, Eastern time/all-day, currency, and normalized name. Upserts preserve `first_seen_at` and revise mutable fields. The `periods` table records complete/incomplete month attempts.
+
+Exports are stable-sorted and complete:
+
+- `data/exports/forex_factory_calendar_full.csv`
+- `data/exports/forex_factory_calendar_full.parquet`
+
+## Incremental behavior and validation
+
+A successful sync re-reads at least the preceding 60 days, includes the current and following month, retries missing/incomplete months, applies weekly revisions, exports, validates, and only then atomically writes `data/sync_state.json`. `data/dataset_manifest.json` reports exact local bounds and counts, missing/incomplete months, duplicates, required-field/date issues, provenance, last successful sync, and export SHA-256 hashes.
+
+Strict validation exits nonzero for duplicate keys, historical month gaps, invalid impacts/dates, incomplete or suspiciously empty months, and missing essential fields:
 
 ```bash
-python -m ff_calendar_toolkit.cli scrape --months 2025-03
+python -m ff_calendar_toolkit.cli validate --strict
 ```
 
-Multiple values are supported: `--months this next 2025-06`
-
-### Output format and storage
-
-```yaml
-output_format: both   # csv | json | both
-output_dir: news
-```
-
-Three storage tiers are written on every run:
-
-```
-news/last_run/     ← overwritten each run (easy to read latest)
-news/monthly/      ← canonical file for each month (updated in place)
-news/history/      ← timestamped snapshots, never overwritten
-```
-
-### Timezone conversion
-
-```yaml
-timezone: Asia/Karachi
-```
-
-All event times are converted from the Forex Factory source timezone to your configured timezone. Any [tz database name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) works.
-
----
-
-## Scheduling
-
-Set `schedule_preset` in `config.yaml`:
-
-**Scraper presets**
-
-| Preset | Cron |
-|---|---|
-| `weekly` (default) | `0 0 * * 0` |
-| `daily` | `0 0 * * *` |
-| `monthly` | `0 0 1 * *` |
-| `hourly` | `0 * * * *` |
-
-**Alert check presets**
-
-| Preset | Cron |
-|---|---|
-| `every_1_minute` | `* * * * *` |
-| `every_5_minutes` | `*/5 * * * *` |
-| `every_10_minutes` | `*/10 * * * *` |
-| `hourly` | `0 * * * *` |
-
-Use a custom cron expression instead of a preset via the `CRON_SCHEDULE` or `ALERT_CRON_SCHEDULE` env variables.
-
----
-
-## Alert rules
-
-One YAML file per rule in `rules/`. A rule fires when all `match` conditions are met.
-
-```yaml
-name: usd-cpi-alert
-enabled: true
-match:
-  currencies: [USD]
-  impacts: [red]
-  event_keywords: [CPI]
-  weekdays: [Wed]
-trigger:
-  minutes_before: 10
-deliver:
-  - discord_main
-```
-
-**Match fields** (all optional, combined with AND logic):
-
-| Field | Type | Example |
-|---|---|---|
-| `currencies` | list | `[USD, EUR, GBP]` |
-| `impacts` | list | `[red, orange]` |
-| `event_names` | list | exact event name match |
-| `event_keywords` | list | substring match on event name |
-| `weekdays` | list | `[Mon, Tue, Wed, Thu, Fri]` |
-
-Multiple rules can target the same connector. State is tracked so an alert fires only once per event.
-
----
-
-## Notification setup
-
-Enable connectors in `config.yaml` under `alerts.connectors`, then add secrets to `.env`.
-
-**Discord**
-
-A webhook is a special URL that lets this script post messages directly to a channel. No bot account or coding required.
-
-How to create one:
-
-1. Open Discord and go to the channel where you want alerts (e.g. `#forex-alerts`)
-2. Click the gear icon next to the channel name to open **Edit Channel**
-3. In the left menu click **Integrations**
-4. Click **Create Webhook** (or **New Webhook** if one already exists)
-5. Give it a name like `Forex Factory Alerts` and optionally upload an avatar
-6. Click **Copy Webhook URL** — this is the URL you need
-7. Paste it into your `.env` as shown below
-
-Keep the webhook URL private — anyone with it can post to your channel.
-
-```yaml
-- id: discord_main
-  type: discord
-  enabled: true
-  webhook_url_env: DISCORD_WEBHOOK_URL
-```
-
-```env
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1234567890/xxxx
-```
-
-Verify it works by running:
+## Configuration search
 
 ```bash
-python -m ff_calendar_toolkit.cli test-notify
+python -m ff_calendar_toolkit.cli find-configuration \
+  --event "ADP Non-Farm Employment Change" \
+  --currencies USD EUR \
+  --counted-impacts red orange \
+  --only
 ```
 
-**Telegram**
+`--only` requires the event and rejects a date containing another selected-currency red/orange event. Stored yellow/gray events are shown as ignored and do not disqualify it. Each result includes the date, matching event, all counted events, ignored events, and an explanation. With a complete validated archive, 2023-08-02 and 2023-12-06 are regression matches while 2024-05-01 fails due to other counted events; these outcomes are computed from data, never hard-coded.
 
-Create a bot via [@BotFather](https://t.me/BotFather) (`/newbot`). Get your chat ID by messaging the bot, then calling `https://api.telegram.org/bot<TOKEN>/getUpdates`. Group chat IDs are negative.
+## Testing
 
-```yaml
-- id: telegram_main
-  type: telegram
-  enabled: true
-  bot_token_env: TELEGRAM_BOT_TOKEN
-  chat_id_env: TELEGRAM_CHAT_ID
-```
-
-```env
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF
-TELEGRAM_CHAT_ID=-1001234567890
-```
-
-**Webhook**
-
-Sends a JSON payload with `message`, `rule`, `event`, and `event_time` fields. Supports an optional auth header.
-
-```yaml
-- id: webhook_main
-  type: webhook
-  enabled: true
-  url_env: ALERT_WEBHOOK_URL
-  auth_header_name: Authorization
-  auth_header_env: ALERT_WEBHOOK_AUTH
-```
-
-**Testing your setup**
-
-After configuring any connector, run:
+Normal tests use local strings/fixtures and do not need live access:
 
 ```bash
-python -m ff_calendar_toolkit.cli test-notify
+python -m pytest -q
 ```
 
-It sends a real test message through every enabled connector and prints the result:
+Live source checks are operational commands rather than mandatory unit tests because rate limits and security pages are external conditions.
 
-```
-ok    discord_main
-ok    telegram_main
-fail  webhook_main: Missing required secret environment variable 'ALERT_WEBHOOK_URL'
-```
+## Limitations
 
-`fail` lines show the exact error — usually a missing `.env` variable or an invalid URL. Fix those before relying on live alerts.
-
----
-
-## Configuration reference
-
-Full `config.yaml` with all available keys:
-
-```yaml
-months: [this]              # this | next | YYYY-MM (list)
-output_format: both         # csv | json | both
-output_dir: news
-timezone: UTC               # any tz database name
-allowed_currencies: [USD, EUR, GBP, CAD]
-allowed_impacts: [red, orange, gray]
-headless: true
-schedule_preset: weekly     # weekly | daily | monthly | hourly
-viewer_host: 127.0.0.1
-viewer_port: 8501
-
-alerts:
-  rules_dir: rules
-  state_dir: state/alerts
-  check_interval_minutes: 5
-  schedule_preset: every_5_minutes
-  retry_attempts: 3
-  retry_backoff_seconds: 1
-  message_prefix: "Forex Factory Alert"
-  connectors: []
-```
-
-Config precedence: **CLI flags > env vars > config.yaml > defaults**
-
----
-
-## Troubleshooting
-
-- Alerts not firing: check `enabled: true` on the rule and connector, and confirm the secret exists in `.env`
-- Run `test-notify` to verify delivery works before waiting for a real event
-- If the FF site changes and rows stop parsing, update selectors in `ff_calendar_toolkit/scraper.py`
-
----
-
-For educational use. Respect Forex Factory's terms of service.
+Forex Factory does not promise a permanent public historical API or stable HTML. Upstream corrections can change old records. Events without upstream IDs use schedule/name identity, so a simultaneous change of both name and schedule can appear as a new logical event. Parquet export requires `pyarrow`. All source data remains subject to its source terms; toolkit code remains MIT licensed.
