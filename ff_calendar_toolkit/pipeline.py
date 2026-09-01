@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -11,12 +13,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .database import CalendarDatabase, ESSENTIAL
-from .ingest import SourceError, parse_archive, parse_html, parse_weekly_json
+from .ingest import (SourceError, VerificationPageError, parse_archive, parse_html,
+                     parse_weekly_json)
 
 ARCHIVE_REPO = "https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar"
 WEEKLY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 CALENDAR_URL = "https://www.forexfactory.com/calendar?month={month}"
 DATA = Path("data")
+CHROME_PROFILE = DATA / "chrome-profile"
+INTERACTIVE_WAIT_SECONDS = 10 * 60
 
 
 def get(url: str, timeout: int = 60) -> bytes:
@@ -55,33 +60,116 @@ def bootstrap(db: CalendarDatabase, archive_file: str | None = None) -> int:
     return len(rows)
 
 
-def _selenium_month(month: date) -> str:
-    """Use the repository's standard Selenium browser; never attempts challenge bypass."""
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    options=Options(); options.add_argument("--headless=new"); options.add_argument("--no-sandbox"); options.add_argument("--disable-dev-shm-usage")
-    driver=webdriver.Chrome(options=options)
-    try:
-        driver.get(CALENDAR_URL.format(month=month.strftime("%b.%Y").lower()))
-        import time; time.sleep(float(os.environ.get("FF_PAGE_WAIT_SECONDS", "3")))
-        return driver.page_source
-    finally: driver.quit()
+class CalendarBrowser:
+    """One reusable browser session for monthly retrieval.
 
+    Interactive mode deliberately only waits for a human to satisfy an upstream
+    verification control.  It contains no challenge-solving or bypass behavior.
+    """
 
-def backfill(db: CalendarDatabase, start: date, end: date, html_directory: Path | None = None) -> int:
-    total=0
-    for month in month_range(start, end):
-        period=month.strftime("%Y-%m")
+    def __init__(self, interactive: bool = False, driver_factory=None, options_factory=None, sleep=time.sleep,
+                 monotonic=time.monotonic, output=print) -> None:
+        self.interactive = interactive
+        self.driver_factory = driver_factory
+        self.options_factory = options_factory
+        self.sleep = sleep
+        self.monotonic = monotonic
+        self.output = output
+        self.driver = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+    def _start(self):
+        if self.driver is not None:
+            return self.driver
+        if self.options_factory is None:
+            from selenium.webdriver.chrome.options import Options
+            options = Options()
+        else:
+            options = self.options_factory()
+        if not self.interactive:
+            options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        if self.interactive:
+            CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
+            options.add_argument(f"--user-data-dir={CHROME_PROFILE.resolve()}")
+        if self.driver_factory is None:
+            from selenium import webdriver
+            factory = lambda opts: webdriver.Chrome(options=opts)
+        else:
+            factory = self.driver_factory
+        self.driver = factory(options)
+        return self.driver
+
+    def retrieve(self, month: date) -> tuple[str, list[dict]]:
+        driver = self._start()
+        period = month.strftime("%Y-%m")
+        url = CALENDAR_URL.format(month=month.strftime("%b.%Y").lower())
+        driver.get(url)
+        self.sleep(float(os.environ.get("FF_PAGE_WAIT_SECONDS", "3")))
+        text = driver.page_source
         try:
-            saved = html_directory / f"{period}.html" if html_directory else None
-            text=saved.read_text(encoding="utf-8") if saved and saved.exists() else _selenium_month(month)
-            rows=parse_html(text, (saved.as_uri() if saved else CALENDAR_URL.format(month=month.strftime("%b.%Y").lower())), period)
-            # A completed ordinary month with zero rows is never accepted.
-            if not rows: raise SourceError("suspiciously empty calendar month")
-            total += db.upsert(rows); db.mark_period(period, "complete", len(rows), source_type="calendar_html")
-        except Exception as exc:
-            db.mark_period(period, "incomplete", error=str(exc), source_type="calendar_html")
-            raise SourceError(f"month {period} remains incomplete: {exc}") from exc
+            return text, parse_html(text, url, period)
+        except VerificationPageError:
+            if not self.interactive:
+                raise
+
+        # Only a positively identified verification page enters manual recovery.
+        # Once detected, transient empty/partially rendered pages are expected while
+        # the user completes the control, so poll until valid rows or the deadline.
+        self.output(
+            "VERIFICATION REQUIRED: Complete the CAPTCHA, Cloudflare, or other "
+            "verification manually in the open Chrome window. This program will "
+            "not solve or bypass it and will wait up to 10 minutes for calendar rows."
+        )
+        deadline = self.monotonic() + INTERACTIVE_WAIT_SECONDS
+        while True:
+            self.sleep(2)
+            text = driver.page_source
+            try:
+                return text, parse_html(text, url, period)
+            except SourceError:
+                if self.monotonic() >= deadline:
+                    raise
+
+    def close(self) -> None:
+        if self.driver is not None:
+            self.driver.quit()
+            self.driver = None
+
+
+def backfill(db: CalendarDatabase, start: date, end: date, html_directory: Path | None = None,
+             interactive_browser: bool = False, browser: CalendarBrowser | None = None) -> int:
+    total=0
+    owned_browser = browser is None
+    browser = browser or CalendarBrowser(interactive_browser)
+    try:
+        for month in month_range(start, end):
+            period=month.strftime("%Y-%m")
+            print(f"Retrieving month {period}...")
+            try:
+                saved = html_directory / f"{period}.html" if html_directory else None
+                if saved and saved.exists():
+                    text=saved.read_text(encoding="utf-8")
+                    rows=parse_html(text, saved.resolve().as_uri(), period)
+                else:
+                    _text, rows=browser.retrieve(month)
+                # A completed ordinary month with zero rows is never accepted.
+                if not rows: raise SourceError("suspiciously empty calendar month")
+                total += db.upsert(rows); db.mark_period(period, "complete", len(rows), source_type="calendar_html")
+                print(f"Month {period} complete: {len(rows)} rows")
+            except Exception as exc:
+                db.mark_period(period, "incomplete", error=str(exc), source_type="calendar_html")
+                print(f"Month {period} incomplete/error: {exc}", file=sys.stderr)
+                raise SourceError(f"month {period} remains incomplete: {exc}") from exc
+    finally:
+        if owned_browser:
+            browser.close()
     return total
 
 
@@ -125,17 +213,22 @@ def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = 
     return manifest,errors
 
 
-def sync(db: CalendarDatabase, archive_file: str | None = None) -> dict:
+def sync(db: CalendarDatabase, archive_file: str | None = None,
+         interactive_browser: bool = False) -> dict:
     bootstrap(db,archive_file)
     next_month=(date.today().replace(day=28)+timedelta(days=4)).replace(day=1)
-    # Explicitly detect gaps after the archive. Failed periods are absent/incomplete and retried.
-    covered={r[0] for r in db.connection.execute("SELECT period FROM periods WHERE status='complete'")}
-    for month in month_range(date(2025,4,1),next_month):
-        if month.strftime("%Y-%m") not in covered:
-            backfill(db,month,month)
-    start=max(date(2025,4,8), date.today()-timedelta(days=60))
-    # Re-fetch the revision window, current month and next month. A failure prevents state advancement.
-    backfill(db,start,next_month); update(db); db.export(("csv","parquet"))
+    # One browser (and therefore one cookie session) is shared by gaps and the
+    # revision window. Bootstrap remains idempotent and reuses existing rows.
+    with CalendarBrowser(interactive_browser) as browser:
+        # Explicitly detect gaps after the archive. Failed periods are absent/incomplete and retried.
+        covered={r[0] for r in db.connection.execute("SELECT period FROM periods WHERE status='complete'")}
+        for month in month_range(date(2025,4,1),next_month):
+            if month.strftime("%Y-%m") not in covered:
+                backfill(db,month,month,browser=browser)
+        start=max(date(2025,4,8), date.today()-timedelta(days=60))
+        # Re-fetch the revision window, current month and next month. A failure prevents state advancement.
+        backfill(db,start,next_month,browser=browser)
+    update(db); db.export(("csv","parquet"))
     manifest,errors=validate(db,strict=True)
     if errors: raise SourceError("validation failed: "+"; ".join(errors))
     state={"completed_at":datetime.now(timezone.utc).isoformat(),"latest_event_date":manifest["latest_event_date"]}

@@ -22,9 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = subparsers.add_parser("backfill", help="Retrieve historical calendar months")
     backfill.add_argument("--start", required=True); backfill.add_argument("--end", required=True)
     backfill.add_argument("--html-directory", type=Path, help="Directory of YYYY-MM.html saved pages")
+    backfill.add_argument("--interactive-browser", action="store_true", help="Show Chrome and wait for manual verification when required")
     subparsers.add_parser("update", help="Upsert the public weekly calendar")
     sync = subparsers.add_parser("sync", help="Bootstrap, backfill, update, validate and export")
     sync.add_argument("--archive-file")
+    sync.add_argument("--interactive-browser", action="store_true", help="Show Chrome and wait for manual verification when required")
     validate = subparsers.add_parser("validate", help="Validate canonical database")
     validate.add_argument("--strict", action="store_true")
     export = subparsers.add_parser("export", help="Create deterministic complete exports")
@@ -201,9 +203,9 @@ def run_data_command(args) -> int:
     db=CalendarDatabase()
     try:
         if args.command=="bootstrap": print(f"Imported {bootstrap(db,args.archive_file)} archive rows")
-        elif args.command=="backfill": print(f"Upserted {backfill(db,_cli_date(args.start),_cli_date(args.end),args.html_directory)} rows")
+        elif args.command=="backfill": print(f"Upserted {backfill(db,_cli_date(args.start),_cli_date(args.end),args.html_directory,args.interactive_browser)} rows")
         elif args.command=="update": print(f"Upserted {update(db)} weekly rows")
-        elif args.command=="sync": print(json.dumps(sync(db,args.archive_file),indent=2))
+        elif args.command=="sync": print(json.dumps(sync(db,args.archive_file,args.interactive_browser),indent=2))
         elif args.command=="validate":
             manifest,errors=validate(db,args.strict); print(json.dumps(manifest,indent=2)); return 1 if errors else 0
         elif args.command=="export": print(json.dumps(db.export(args.format),indent=2))

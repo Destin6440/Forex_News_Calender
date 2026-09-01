@@ -15,9 +15,14 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 IMPACTS = {"red": "High", "orange": "Medium", "yellow": "Low", "gray": "Non-Economic/Holiday"}
 BLOCK_MARKERS = ("cf-chl-", "captcha", "verify you are human", "attention required", "cloudflare", "security check")
+VERIFICATION_PAGE_ERROR = "verification/security page received instead of calendar data"
 
 
 class SourceError(RuntimeError): pass
+
+
+class VerificationPageError(SourceError):
+    """The upstream response is a verification page, not calendar data."""
 
 
 def normalized_name(value: str) -> str:
@@ -145,7 +150,8 @@ class _CalendarHTML(HTMLParser):
 def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> list[dict]:
     text = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
     lowered=text.lower()
-    if any(marker in lowered for marker in BLOCK_MARKERS): raise SourceError("verification/security page received instead of calendar data")
+    if any(marker in lowered for marker in BLOCK_MARKERS):
+        raise VerificationPageError(VERIFICATION_PAGE_ERROR)
     parser=_CalendarHTML(); parser.feed(text)
     if not parser.rows: raise SourceError("page contains no recognizable calendar rows")
     result=[]; current_date=None; current_time=None
