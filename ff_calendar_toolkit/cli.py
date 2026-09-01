@@ -1,21 +1,14 @@
+from __future__ import annotations
+
 import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT
-from .console import AppConsole
-from .runtime import (
-    build_alert_options,
-    build_run_options,
-    build_view_options,
-    current_alert_schedule,
-    current_schedule,
-    load_env_file,
-    resolve_config_path,
-)
-from .scheduler import resolve_alert_schedule, resolve_schedule
+DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT = "127.0.0.1", 8501
+
+DATA_COMMANDS = {"bootstrap", "backfill", "update", "sync", "validate", "export", "import-html", "find-configuration"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +16,25 @@ def build_parser() -> argparse.ArgumentParser:
         description="Professional local-first Forex Factory calendar toolkit."
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    bootstrap = subparsers.add_parser("bootstrap", help="Download/import the MIT historical archive")
+    bootstrap.add_argument("--archive-file", help="Legitimate local CSV/Parquet archive fallback")
+    backfill = subparsers.add_parser("backfill", help="Retrieve historical calendar months")
+    backfill.add_argument("--start", required=True); backfill.add_argument("--end", required=True)
+    backfill.add_argument("--html-directory", type=Path, help="Directory of YYYY-MM.html saved pages")
+    subparsers.add_parser("update", help="Upsert the public weekly calendar")
+    sync = subparsers.add_parser("sync", help="Bootstrap, backfill, update, validate and export")
+    sync.add_argument("--archive-file")
+    validate = subparsers.add_parser("validate", help="Validate canonical database")
+    validate.add_argument("--strict", action="store_true")
+    export = subparsers.add_parser("export", help="Create deterministic complete exports")
+    export.add_argument("--format", nargs="+", choices=["csv", "parquet"], required=True)
+    imported = subparsers.add_parser("import-html", help="Import a legitimately saved calendar page")
+    imported.add_argument("path", type=Path); imported.add_argument("--period", help="YYYY-MM (inferred from events when omitted)")
+    find = subparsers.add_parser("find-configuration", help="Find historical same-day event configurations")
+    find.add_argument("--event", required=True); find.add_argument("--currencies", nargs="+", required=True)
+    find.add_argument("--counted-impacts", nargs="+", required=True, choices=["red","orange","yellow","gray"])
+    find.add_argument("--only", action="store_true")
 
     scrape = subparsers.add_parser("scrape", help="Run the scraper and write output files")
     scrape.add_argument("--config", help="Path to YAML config file")
@@ -84,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _prepare_args(argv: list[str] | None) -> list[str]:
     args = list(argv) if argv is not None else sys.argv[1:]
-    if not args or args[0] not in {"scrape", "view", "alerts-check", "schedule-info", "alerts-schedule-info", "test-notify"}:
+    if not args or args[0] not in {"scrape", "view", "alerts-check", "schedule-info", "alerts-schedule-info", "test-notify", *DATA_COMMANDS}:
         return ["scrape", *args]
     return args
 
@@ -92,6 +104,12 @@ def _prepare_args(argv: list[str] | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(_prepare_args(argv))
+    if args.command in DATA_COMMANDS:
+        return run_data_command(args)
+    from .console import AppConsole
+    from .runtime import (build_alert_options, build_run_options, current_alert_schedule,
+                          current_schedule, load_env_file, resolve_config_path)
+    from .scheduler import resolve_alert_schedule, resolve_schedule
     console = AppConsole()
     config_path = resolve_config_path(getattr(args, "config", None))
     env_path = load_env_file(config_path)
@@ -143,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_viewer(console: AppConsole, args) -> int:
+    from .runtime import build_view_options
     options = build_view_options(args)
     env = os.environ.copy()
     env["FF_CONFIG_PATH"] = str(options.config_path)
@@ -166,6 +185,39 @@ def run_viewer(console: AppConsole, args) -> int:
     except FileNotFoundError:
         console.error("Streamlit is not installed. Install requirements and try again.")
         return 1
+
+
+def _cli_date(value: str):
+    from datetime import date
+    return date.today() if value == "today" else date.fromisoformat(value)
+
+
+def run_data_command(args) -> int:
+    import json
+    from .configuration import find_configurations
+    from .database import CalendarDatabase
+    from .ingest import SourceError, parse_html
+    from .pipeline import backfill, bootstrap, sync, update, validate
+    db=CalendarDatabase()
+    try:
+        if args.command=="bootstrap": print(f"Imported {bootstrap(db,args.archive_file)} archive rows")
+        elif args.command=="backfill": print(f"Upserted {backfill(db,_cli_date(args.start),_cli_date(args.end),args.html_directory)} rows")
+        elif args.command=="update": print(f"Upserted {update(db)} weekly rows")
+        elif args.command=="sync": print(json.dumps(sync(db,args.archive_file),indent=2))
+        elif args.command=="validate":
+            manifest,errors=validate(db,args.strict); print(json.dumps(manifest,indent=2)); return 1 if errors else 0
+        elif args.command=="export": print(json.dumps(db.export(args.format),indent=2))
+        elif args.command=="import-html":
+            rows=parse_html(args.path.read_bytes(),args.path.resolve().as_uri(),args.period or "")
+            db.upsert(rows)
+            for period in sorted({r["date_et"][:7] for r in rows}): db.mark_period(period,"complete",sum(r["date_et"].startswith(period) for r in rows),source_type="saved_html")
+            print(f"Imported {len(rows)} rows")
+        elif args.command=="find-configuration":
+            print(json.dumps(find_configurations(db.rows(),args.event,args.currencies,args.counted_impacts,args.only),indent=2))
+        return 0
+    except (SourceError,RuntimeError,ValueError,OSError) as exc:
+        print(f"ERROR: {exc}",file=sys.stderr); return 1
+    finally: db.close()
 
 
 if __name__ == "__main__":
