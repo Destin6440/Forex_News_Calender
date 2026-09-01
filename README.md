@@ -59,6 +59,27 @@ python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 -
 
 Verification pages, malformed HTML, and empty calendars are rejected. Failed months remain `incomplete` and are retried; rerun `sync` after supplying legitimate input or after source access recovers.
 
+### Interactive-browser recovery
+
+When the headless browser is challenged, rerun sync with the recovery mode:
+
+```bash
+python -m ff_calendar_toolkit.cli sync --interactive-browser
+```
+
+This opens one visible Chrome window and reuses it for every requested month. If
+a verification page appears, complete it manually in Chrome; the toolkit never
+solves or bypasses the control. It keeps the window open for up to 10 minutes and
+continues only after recognizable calendar rows appear. Legitimately issued
+cookies and browser state are retained locally in `data/chrome-profile` for later
+runs (the directory is ignored by Git). Headless browsing remains the default.
+
+The same mode is available for a bounded recovery, for example:
+
+```bash
+python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 --interactive-browser
+```
+
 ## Canonical data and identity
 
 `data/forex_factory.sqlite` is canonical. The `events` table includes:

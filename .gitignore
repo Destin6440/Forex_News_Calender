@@ -11,3 +11,5 @@ env/
 news/
 state/
 data/
+# Explicitly document that persistent interactive-browser credentials are local only.
+data/chrome-profile/
