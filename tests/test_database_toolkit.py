@@ -1,4 +1,5 @@
 import csv
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,41 @@ def test_archive_import_idempotency_and_revision(tmp_path):
     revised=canonical(raw(day="2024-01-01",clock="8:30am",event="Jobs",actual="9",source_event_id="42"),"test")
     db.upsert([revised]); revised["actual"]="10"; revised["time"]="9:00am"; db.upsert([revised])
     assert len(db.rows())==2 and next(r for r in db.rows() if r["source_event_id"]=="42")["actual"]=="10"
+
+
+PRODUCTION_ARCHIVE_CSV = b"""DateTime,Currency,Impact,Event,Actual,Forecast,Previous,Detail
+2007-01-03T16:45:00+03:30,USD,High Impact Expected,ADP Non-Farm Employment Change,,,,
+"""
+
+
+def assert_production_archive_rows(rows):
+    [adp] = rows
+    assert adp["event_name"] == "ADP Non-Farm Employment Change"
+    assert (adp["impact_color"], adp["impact_level"]) == ("red", "High")
+    assert impact("Medium Impact Expected") == ("orange", "Medium")
+    # 16:45 at UTC+03:30 is 13:15 UTC and 08:15 in New York in January.
+    assert (adp["date_et"], adp["time_et"]) == ("2007-01-03", "08:15")
+    assert datetime.fromisoformat(adp["datetime_et"]).utcoffset().total_seconds() == -5 * 60 * 60
+
+
+def test_production_archive_datetime_header_and_timezone_conversion():
+    assert_production_archive_rows(parse_archive(PRODUCTION_ARCHIVE_CSV))
+
+
+def test_archive_date_and_date_et_headers_remain_supported():
+    for header in ("date", "date_et"):
+        content = f"{header},time,currency,impact,event\n2024-01-10,8:30am,USD,red,Jobs\n".encode()
+        row = parse_archive(content)[0]
+        assert (row["date_et"], row["time_et"]) == ("2024-01-10", "08:30")
+
+
+def test_production_parquet_archive_datetime_header_and_timezone_conversion():
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    frame = pd.read_csv(io.BytesIO(PRODUCTION_ARCHIVE_CSV), keep_default_na=False)
+    parquet = io.BytesIO()
+    frame.to_parquet(parquet, index=False)
+    assert_production_archive_rows(parse_archive(parquet.getvalue(), "archive.parquet"))
 
 
 HTML='''<table><tr class="calendar__row"><td class="calendar__date">WedAug 2</td><td class="calendar__time">8:15am</td><td class="calendar__currency">USD</td><td class="calendar__impact"><span class="icon--ff-impact-red"></span></td><td class="calendar__event"><a href="/calendar/1">ADP Non-Farm Employment Change</a></td></tr><tr class="calendar__row"><td class="calendar__time"></td><td class="calendar__currency">EUR</td><td class="calendar__impact icon--ff-impact-orange"></td><td class="calendar__event">Simultaneous Event</td></tr><tr class="calendar__row"><td class="calendar__date">ThuAug 3</td><td class="calendar__time">All Day</td><td class="calendar__currency">ALL</td><td class="calendar__impact icon--ff-impact-gray"></td><td class="calendar__event">Holiday</td></tr></table>'''

@@ -107,7 +107,12 @@ def parse_archive(content: bytes, filename: str = "archive.csv") -> list[dict]:
         except Exception as exc: raise SourceError(f"cannot read archive parquet: {exc}") from exc
     else:
         text = content.decode("utf-8-sig"); rows = list(csv.DictReader(io.StringIO(text)))
-    aliases = {"event": "event_name", "title": "event_name", "country": "currency"}
+    aliases = {
+        "datetime": "date",
+        "event": "event_name",
+        "title": "event_name",
+        "country": "currency",
+    }
     output = []
     for original in rows:
         row = {aliases.get(str(k).strip().lower(), str(k).strip().lower()): v for k, v in original.items()}
