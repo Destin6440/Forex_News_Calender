@@ -38,6 +38,20 @@ MONTH_DATA_TIME_RE = re.compile(
     r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+Data",
     re.IGNORECASE,
 )
+REFERENCE_DATE_TIME_RE = re.compile(
+    r"(?P<month>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+    r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+    r"(?P<day>[1-9]|[12]\d|3[01])(?P<suffix>st|nd|rd|th)",
+    re.IGNORECASE,
+)
+MONTH_NUMBERS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2,
+    "mar": 3, "march": 3, "apr": 4, "april": 4, "may": 5,
+    "jun": 6, "june": 6, "jul": 7, "july": 7, "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
 
 
 class SourceError(RuntimeError): pass
@@ -51,10 +65,28 @@ def normalized_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
-def month_data_identity_label(value: str) -> str | None:
-    """Return the normalized identity suffix only for an exact Month Data label."""
+def non_clock_period_identity_label(value: str) -> str | None:
+    """Return an identity suffix for an exact supported non-clock period label.
+
+    Reference dates intentionally have no year.  February 29 is therefore the
+    conservative maximum for February; impossible dates and incorrect ordinal
+    suffixes are rejected rather than interpreted as clockless events.
+    """
     stripped = value.strip()
-    return normalized_name(stripped) if MONTH_DATA_TIME_RE.fullmatch(stripped) else None
+    if MONTH_DATA_TIME_RE.fullmatch(stripped):
+        return normalized_name(stripped)
+    match = REFERENCE_DATE_TIME_RE.fullmatch(stripped)
+    if not match:
+        return None
+    day = int(match.group("day"))
+    month = MONTH_NUMBERS[match.group("month").casefold()]
+    maximum_day = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month - 1]
+    expected_suffix = (
+        "th" if 10 < day % 100 < 14 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    )
+    if day > maximum_day or match.group("suffix").casefold() != expected_suffix:
+        return None
+    return normalized_name(stripped)
 
 
 def impact(value: str) -> tuple[str, str]:
@@ -90,7 +122,7 @@ def _time(value: str) -> tuple[time | None, bool]:
     compact = raw.replace(" ", "")
     if (compact in {"allday", "tentative"}
             or re.fullmatch(r"day\s+[1-9]\d*", raw)
-            or month_data_identity_label(raw) is not None):
+            or non_clock_period_identity_label(raw) is not None):
         return None, True
     if not raw:
         return None, False
@@ -120,12 +152,12 @@ def canonical(raw: dict, source_type: str, source_period: str = "") -> dict:
     if not source_id and url:
         match = re.search(r"(?:event|id)[=/.-](\d+)", url, re.I); source_id = match.group(1) if match else None
     # Preserve the established ALL_DAY fallback key for all existing non-clock
-    # labels. Only the newly supported Month Data labels need a suffix to keep
+    # labels. Only supported period identity labels receive a suffix to keep
     # otherwise identical delayed periods distinct.
-    month_data_label = month_data_identity_label(raw_time) if clock is None else None
+    period_label = non_clock_period_identity_label(raw_time) if clock is None else None
     time_identity = clock.strftime("%H:%M") if clock else "ALL_DAY"
-    if month_data_label:
-        time_identity += f":{month_data_label}"
+    if period_label:
+        time_identity += f":{period_label}"
     identity = "|".join((day.isoformat(), time_identity, currency, normalized_name(name)))
     key = f"ff:{source_id}" if source_id else "derived:" + hashlib.sha256(identity.encode()).hexdigest()
     now = datetime.now(timezone.utc).isoformat()

@@ -63,10 +63,10 @@ def virtual_page(batches, active):
     return "".join(rows) + "</table>"
 
 
-def same_day_virtual_page(events, active):
+def same_day_virtual_page(events, active, *, day="Wed Oct 22 2025", currency="GBP"):
     """Build one virtualized October 22 day with selected events materialized."""
     rows = ['<table class="calendar__table"><tr class="calendar__row calendar__row--day-breaker">'
-            '<td class="calendar__date">Wed Oct 22 2025</td></tr>']
+            f'<td class="calendar__date">{day}</td></tr>']
     for index, (event_id, name, clock) in enumerate(events):
         if index not in active:
             rows.append('<tr class="calendar__row"><td class="calendar__cell--blank"></td></tr>')
@@ -75,7 +75,7 @@ def same_day_virtual_page(events, active):
         link_start = f'<a href="/calendar/{event_id}">' if event_id else ""
         link_end = "</a>" if event_id else ""
         rows.append(f'''<tr class="calendar__row"{id_attribute}>
-            <td class="calendar__time">{clock}</td><td class="calendar__currency">GBP</td>
+            <td class="calendar__time">{clock}</td><td class="calendar__currency">{currency}</td>
             <td class="calendar__impact icon--ff-impact-yellow"></td>
             <td class="calendar__event">{link_start}{name}{link_end}</td></tr>''')
     return "".join(rows) + "</table>"
@@ -177,6 +177,40 @@ def test_virtualized_sweep_accepts_production_month_data_sequence(tmp_path, monk
                for event in events)
     assert len({event["source_event_id"] for event in events}) == 14
     assert len({event["event_key"] for event in events}) == 14
+    browser.close()
+
+
+def test_virtualized_sweep_preserves_reference_dates_and_clock_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    production_rows = [
+        ("81001", "Unemployment Claims", "Sep 27th"),
+        ("81002", "Unemployment Claims", "Oct 4th"),
+        ("81003", "Unemployment Claims", "Oct 11th"),
+        ("81004", "Unemployment Claims", "2:10am"),
+    ]
+    pages = [
+        same_day_virtual_page(production_rows, active, day="Tue Nov 18 2025", currency="USD")
+        for active in ({0, 1}, {1, 2}, {2, 3})
+    ]
+    browser = attached_browser(tmp_path, VirtualDriver(pages))
+
+    _html, events = browser.retrieve(date(2025, 11, 1))
+
+    assert [event["source_event_id"] for event in events] == [
+        "81001", "81002", "81003", "81004",
+    ]
+    assert len({event["event_key"] for event in events}) == 4
+    assert [event["raw_time"] for event in events] == [
+        "Sep 27th", "Oct 4th", "Oct 11th", "2:10am",
+    ]
+    assert all(
+        event["all_day"] is True
+        and event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+        for event in events[:3]
+    )
+    assert events[3]["all_day"] is False
+    assert events[3]["time_et"] == "02:10"
     browser.close()
 
 

@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from .ingest import (SourceError, VerificationPageError, calendar_row_counts,
-                     month_data_identity_label, parse_html)
+                     non_clock_period_identity_label, parse_html)
 
 CALENDAR_URL = "https://www.forexfactory.com/calendar?month={month}"
 LANDING_URL = "https://www.forexfactory.com/calendar"
@@ -258,11 +258,13 @@ class ChromeHandoff:
 
     @staticmethod
     def _event_identity(event: dict) -> tuple:
-        # Only Month Data labels extend the legacy clockless identity. Other
-        # non-clock labels deliberately retain the established None component.
+        # Only supported period labels extend the legacy clockless identity.
+        # Other non-clock labels retain the established None component.
         non_clock_label = None
         if event.get("time_et") is None:
-            non_clock_label = month_data_identity_label(str(event.get("raw_time") or ""))
+            non_clock_label = non_clock_period_identity_label(
+                str(event.get("raw_time") or "")
+            )
         return (event["date_et"], event.get("time_et"), non_clock_label,
                 event["currency"], event["event_name_normalized"])
 
