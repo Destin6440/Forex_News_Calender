@@ -67,14 +67,16 @@ def test_invalid_or_inexact_month_ordinal_reference_dates_are_rejected(label):
 
 @pytest.mark.parametrize("label", [
     "7th-14th", "7th - 14th", "7th–14th", "7th—14th", "1st-3rd", "21st-31st",
+    "23rd-1st", "23rd - 1st", "28th–4th", "31st—3rd", "23rd-30th",
 ])
 def test_ordinal_day_ranges_are_non_clock_times(label):
     assert _time(label) == (None, True)
 
 
 @pytest.mark.parametrize("label", [
-    "7-14", "7th to 14th", "14th-7th", "0th-14th", "7th-32nd",
-    "7st-14th", "7th-14st", "7th-14th Extra",
+    "7-14", "7th to 14th", "14th-7th", "19th-1st", "23rd-8th",
+    "0th-14th", "7th-32nd", "31st-32nd", "7st-14th", "7th-14st",
+    "23th-1st", "23rd-1th", "7th-14th Extra", "23rd-1st Extra",
 ])
 def test_invalid_or_inexact_ordinal_day_ranges_are_rejected(label):
     with pytest.raises(SourceError, match="malformed time"):
@@ -143,7 +145,19 @@ def test_ordinal_day_range_is_canonical_clockless_event_and_distinguishes_derive
     assert first_window["time_et"] is first_window["datetime_et"] is first_window["datetime_utc"] is None
 
 
-def test_production_ordinal_range_html_row_does_not_inherit_neighboring_clock():
+def test_cross_month_range_is_clockless_and_part_of_fallback_identity():
+    first_window = canonical(raw(clock="23rd-1st", event="German Retail Sales m/m"),
+                             "calendar_html", "2026-09")
+    second_window = canonical(raw(clock="28th-4th", event="German Retail Sales m/m"),
+                              "calendar_html", "2026-09")
+
+    assert first_window["event_key"] != second_window["event_key"]
+    assert first_window["raw_time"] == "23rd-1st"
+    assert first_window["all_day"] is True
+    assert first_window["time_et"] is first_window["datetime_et"] is first_window["datetime_utc"] is None
+
+
+def test_production_ordinal_range_html_rows_do_not_inherit_neighboring_clock():
     html = '''<table><tr class="calendar__row calendar__row--day-breaker">
         <td class="calendar__date">Wed Sep 2 2026</td></tr>
         <tr class="calendar__row" data-event-id="92001">
@@ -151,17 +165,28 @@ def test_production_ordinal_range_html_row_does_not_inherit_neighboring_clock():
         <td class="calendar__impact icon--ff-impact-red"></td>
         <td class="calendar__event">Neighboring Release</td></tr>
         <tr class="calendar__row" data-event-id="92002">
-        <td class="calendar__time">7th-14th</td><td class="calendar__currency">EUR</td>
+        <td class="calendar__time">23rd-30th</td><td class="calendar__currency">EUR</td>
         <td class="calendar__impact icon--ff-impact-yellow"></td>
-        <td class="calendar__event">German WPI m/m</td></tr></table>'''
+        <td class="calendar__event">German Import Prices m/m</td></tr>
+        <tr class="calendar__row" data-event-id="92003">
+        <td class="calendar__time">23rd-1st</td><td class="calendar__currency">EUR</td>
+        <td class="calendar__impact icon--ff-impact-yellow"></td>
+        <td class="calendar__event">German Retail Sales m/m</td></tr></table>'''
 
     events = parse_html(html, "https://www.forexfactory.com/calendar", "2026-09")
-    wpi = next(event for event in events if event["source_event_id"] == "92002")
+    neighbor = next(event for event in events if event["source_event_id"] == "92001")
+    ranges = [event for event in events if event["source_event_id"] in {"92002", "92003"}]
 
-    assert wpi["event_key"] == "ff:92002"
-    assert wpi["raw_time"] == "7th-14th"
-    assert wpi["all_day"] is True
-    assert wpi["time_et"] is wpi["datetime_et"] is wpi["datetime_utc"] is None
+    assert neighbor["time_et"] == "08:30"
+    assert neighbor["all_day"] is False
+    assert [event["event_key"] for event in ranges] == ["ff:92002", "ff:92003"]
+    assert [event["event_name"] for event in ranges] == [
+        "German Import Prices m/m", "German Retail Sales m/m",
+    ]
+    assert [event["raw_time"] for event in ranges] == ["23rd-30th", "23rd-1st"]
+    assert all(event["all_day"] is True for event in ranges)
+    assert all(event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+               for event in ranges)
 
 
 def test_production_reference_date_html_rows_with_source_ids_all_survive():

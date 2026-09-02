@@ -214,13 +214,13 @@ def test_virtualized_sweep_preserves_reference_dates_and_clock_release(tmp_path,
     browser.close()
 
 
-def test_virtualized_sweep_preserves_ordinal_range_without_neighboring_clock(tmp_path, monkeypatch):
+def test_virtualized_sweep_preserves_ordinal_ranges_without_neighboring_clock(tmp_path, monkeypatch):
     monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
     monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
     production_rows = [
         ("92001", "Neighboring Release", "8:30am"),
-        ("92002", "German WPI m/m", "7th-14th"),
-        ("92003", "Later Release", "10:00am"),
+        ("92002", "German Import Prices m/m", "23rd-30th"),
+        ("92003", "German Retail Sales m/m", "23rd-1st"),
     ]
     pages = [
         same_day_virtual_page(production_rows, active, day="Wed Sep 2 2026", currency="EUR")
@@ -229,14 +229,20 @@ def test_virtualized_sweep_preserves_ordinal_range_without_neighboring_clock(tmp
     browser = attached_browser(tmp_path, VirtualDriver(pages))
 
     _html, events = browser.retrieve(date(2026, 9, 1))
-    wpi = next(event for event in events if event["source_event_id"] == "92002")
+    neighbor = next(event for event in events if event["source_event_id"] == "92001")
+    ranges = [event for event in events if event["source_event_id"] in {"92002", "92003"}]
 
-    assert wpi["event_key"] == "ff:92002"
-    assert wpi["currency"] == "EUR"
-    assert wpi["event_name"] == "German WPI m/m"
-    assert wpi["raw_time"] == "7th-14th"
-    assert wpi["all_day"] is True
-    assert wpi["time_et"] is wpi["datetime_et"] is wpi["datetime_utc"] is None
+    assert neighbor["time_et"] == "08:30"
+    assert neighbor["all_day"] is False
+    assert [event["event_key"] for event in ranges] == ["ff:92002", "ff:92003"]
+    assert all(event["currency"] == "EUR" for event in ranges)
+    assert [event["event_name"] for event in ranges] == [
+        "German Import Prices m/m", "German Retail Sales m/m",
+    ]
+    assert [event["raw_time"] for event in ranges] == ["23rd-30th", "23rd-1st"]
+    assert all(event["all_day"] is True for event in ranges)
+    assert all(event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+               for event in ranges)
     browser.close()
 
 
