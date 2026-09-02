@@ -134,23 +134,49 @@ def parse_archive(content: bytes, filename: str = "archive.csv") -> list[dict]:
 
 
 class _CalendarHTML(HTMLParser):
-    def __init__(self): super().__init__(); self.rows=[]; self.row=None; self.cell=None; self.text=[]
+    CELL_KINDS = ("date", "time", "currency", "impact", "event", "actual", "forecast", "previous")
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.row = None
+        self.cell = None
+        self.text = []
+
     def handle_starttag(self, tag, attrs):
         attrs=dict(attrs); cls=attrs.get("class", "")
-        if tag=="tr" and ("calendar__row" in cls or "calendar_row" in cls): self.row={"attrs":attrs,"cells":{}}
-        elif self.row is not None and tag in {"td","span"}:
-            kinds=("date","time","currency","impact","event","actual","forecast","previous")
-            self.cell=next((k for k in kinds if k in cls), None); self.text=[]
-            if self.cell=="impact": self.row["impact_class"]=cls
-        elif self.row is not None and tag=="a":
-            self.row["url"]=attrs.get("href", "")
+        if tag=="tr" and ("calendar__row" in cls or "calendar_row" in cls):
+            self.row={"attrs":attrs,"cells":{},"recognized_cells":[]}
+        elif self.row is not None and tag=="td":
+            classes=set(cls.split())
+            self.cell=next(
+                (kind for kind in self.CELL_KINDS if kind in classes or f"calendar__{kind}" in classes),
+                None,
+            )
+            self.text=[]
+            if self.cell:
+                self.row["recognized_cells"].append(self.cell)
+            if self.cell=="impact":
+                # Forex Factory expresses impact through CSS classes, including
+                # for cells with no visible text.
+                self.row["impact_class"]=cls
+        elif self.row is not None and self.cell=="event" and tag=="a" and "url" not in self.row:
+            href=attrs.get("href")
+            if href:
+                self.row["url"]=href
+        elif self.row is not None and self.cell=="impact" and cls:
+            # Older saved pages put the color class on a child icon. This is
+            # classification metadata only; the child never becomes a cell.
+            self.row["impact_class"] += " " + cls
     def handle_data(self, data):
         if self.cell: self.text.append(data)
     def handle_endtag(self, tag):
-        if self.row is not None and self.cell and tag in {"td","span"}:
-            value=" ".join("".join(self.text).split())
-            if value: self.row["cells"][self.cell]=value
+        if self.row is not None and tag=="td":
+            if self.cell:
+                value=" ".join("".join(self.text).split())
+                if value: self.row["cells"][self.cell]=value
             self.cell=None
+            self.text=[]
         if tag=="tr" and self.row is not None: self.rows.append(self.row); self.row=None
 
 
@@ -163,7 +189,7 @@ def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> 
             raise VerificationPageError(VERIFICATION_PAGE_ERROR)
         raise SourceError("page contains no recognizable calendar rows")
     result=[]; current_date=None; current_time=None
-    for item in parser.rows:
+    for row_number, item in enumerate(parser.rows, start=1):
         cells=item["cells"]
         if cells.get("date"): current_date=cells["date"]
         # Empty time cells carry only within this date; a new date resets the carry.
@@ -174,7 +200,12 @@ def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> 
         if not event_name and not currency:
             continue
         if not event_name or not currency:
-            raise SourceError("calendar row is missing an event name or currency")
+            missing = "event name" if not event_name else "currency"
+            captured = ", ".join(item["recognized_cells"]) or "none"
+            raise SourceError(
+                f"calendar row {row_number} captured recognized cells [{captured}] "
+                f"and is missing an event name or currency: missing {missing}"
+            )
         if not current_date:
             raise SourceError("calendar event row has no date and no preceding date")
         imp=cells.get("impact") or item.get("impact_class", "")
