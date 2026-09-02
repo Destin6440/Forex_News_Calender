@@ -14,6 +14,15 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 IMPACTS = {"red": "High", "orange": "Medium", "yellow": "Low", "gray": "Non-Economic/Holiday"}
+IMPACT_CLASS_COLORS = {
+    "icon--ff-impact-red": "red",
+    "icon--ff-impact-ora": "orange",
+    "icon--ff-impact-orange": "orange",
+    "icon--ff-impact-yel": "yellow",
+    "icon--ff-impact-yellow": "yellow",
+    "icon--ff-impact-gra": "gray",
+    "icon--ff-impact-gray": "gray",
+}
 BLOCK_MARKERS = (
     "cf-chl-",
     "captcha",
@@ -40,7 +49,14 @@ def impact(value: str) -> tuple[str, str]:
     raw = (value or "").strip().lower()
     aliases = {"high": "red", "medium": "orange", "med": "orange", "low": "yellow",
                "holiday": "gray", "non-economic": "gray", "non economic": "gray"}
-    color = next((c for c in IMPACTS if c in raw), "")
+    # Class names are an unordered, whitespace-delimited token set. Match the
+    # complete token so abbreviated production names do not turn unrelated
+    # classes (or arbitrary words containing "ora", "yel", or "gra") into an
+    # impact classification.
+    color = next((IMPACT_CLASS_COLORS[token] for token in raw.split()
+                  if token in IMPACT_CLASS_COLORS), "")
+    if not color and raw in IMPACTS:
+        color = raw
     if not color:
         color = next((mapped for label, mapped in aliases.items() if label in raw), "")
     if not color:
