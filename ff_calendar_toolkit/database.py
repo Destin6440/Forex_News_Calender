@@ -43,7 +43,24 @@ class CalendarDatabase:
           period TEXT PRIMARY KEY, status TEXT NOT NULL, event_count INTEGER NOT NULL DEFAULT 0,
           attempted_at TEXT NOT NULL, error TEXT, source_type TEXT
         );
+        CREATE TABLE IF NOT EXISTS event_sources (
+          provenance_key TEXT PRIMARY KEY, event_key TEXT NOT NULL,
+          source_type TEXT NOT NULL, source_event_id TEXT, source_url TEXT,
+          source_period TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+          FOREIGN KEY(event_key) REFERENCES events(event_key) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS event_sources_event ON event_sources(event_key);
+        CREATE INDEX IF NOT EXISTS event_sources_type ON event_sources(source_type, event_key);
         """)
+        # Backfill normalized provenance when opening a database created by an
+        # earlier toolkit version. INSERT OR IGNORE makes this migration safe on
+        # every startup.
+        for event in self.connection.execute(
+            "SELECT event_key,source_type,source_event_id,source_url,source_period,"
+            "first_seen_at,last_seen_at FROM events"
+        ).fetchall():
+            self._record_source(dict(event))
+        self.connection.commit()
 
     def close(self) -> None:
         self.connection.close()
@@ -64,19 +81,76 @@ class CalendarDatabase:
                         "SELECT event_key, first_seen_at FROM events WHERE source_event_id=?",
                         (row["source_event_id"],),
                     ).fetchone()
+                if existing is None and row["source_type"] == "calendar_html":
+                    # Reconcile archive rows (which commonly have no upstream ID)
+                    # with the same event later read from a monthly page. This
+                    # natural identity is exactly the fallback-key identity and
+                    # prevents overlap duplicates while allowing the stable ID to
+                    # enrich the original row.
+                    existing = self.connection.execute(
+                        "SELECT e.event_key, e.first_seen_at FROM events e "
+                        "JOIN event_sources s ON s.event_key=e.event_key "
+                        "WHERE e.date_et=? "
+                        "AND COALESCE(time_et,'')=COALESCE(?,'') AND currency=? "
+                        "AND event_name_normalized=? AND s.source_type='huggingface_archive' LIMIT 1",
+                        (row["date_et"], row["time_et"], row["currency"], row["event_name_normalized"]),
+                    ).fetchone()
+                if existing is None and row["source_type"] == "huggingface_archive":
+                    existing = self.connection.execute(
+                        "SELECT e.event_key,e.first_seen_at FROM events e "
+                        "JOIN event_sources s ON s.event_key=e.event_key "
+                        "WHERE e.date_et=? AND COALESCE(e.time_et,'')=COALESCE(?,'') "
+                        "AND e.currency=? AND e.event_name_normalized=? "
+                        "AND s.source_type='huggingface_archive' LIMIT 1",
+                        (row["date_et"], row["time_et"], row["currency"], row["event_name_normalized"]),
+                    ).fetchone()
                 if existing and existing["event_key"] != row["event_key"]:
                     # IDs are stable even when time/name (and hence fallback key) changes.
                     row["event_key"] = existing["event_key"]
+                has_monthly = bool(existing and self.connection.execute(
+                    "SELECT 1 FROM event_sources WHERE event_key=? AND source_type='calendar_html' LIMIT 1",
+                    (row["event_key"],),
+                ).fetchone())
                 columns = ",".join(FIELDS)
                 placeholders = ",".join("?" for _ in FIELDS)
                 updates = ",".join(f"{f}=excluded.{f}" for f in FIELDS if f not in {"event_key", "first_seen_at"})
-                self.connection.execute(
-                    f"INSERT INTO events ({columns}) VALUES ({placeholders}) "
-                    f"ON CONFLICT(event_key) DO UPDATE SET {updates}",
-                    [row[f] for f in FIELDS],
-                )
+                if row["source_type"] == "huggingface_archive" and has_monthly:
+                    # Archive provenance remains authoritative for archive
+                    # coverage, but must not erase the richer monthly ID/source.
+                    self.connection.execute(
+                        "UPDATE events SET last_seen_at=?,scraped_at=? WHERE event_key=?",
+                        (row["last_seen_at"], row["scraped_at"], row["event_key"]),
+                    )
+                else:
+                    self.connection.execute(
+                        f"INSERT INTO events ({columns}) VALUES ({placeholders}) "
+                        f"ON CONFLICT(event_key) DO UPDATE SET {updates}",
+                        [row[f] for f in FIELDS],
+                    )
+                self._record_source(row)
                 count += 1
         return count
+
+    def _record_source(self, row: dict) -> None:
+        identity = "|".join(str(row.get(key) or "") for key in (
+            "event_key", "source_type", "source_event_id", "source_url", "source_period"
+        ))
+        provenance_key = hashlib.sha256(identity.encode()).hexdigest()
+        first = row.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
+        last = row.get("last_seen_at") or first
+        self.connection.execute(
+            "INSERT INTO event_sources VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(provenance_key) DO UPDATE SET last_seen_at=excluded.last_seen_at",
+            (provenance_key, row["event_key"], row["source_type"], row.get("source_event_id"),
+             row.get("source_url"), row.get("source_period"), first, last),
+        )
+
+    def sources(self, event_key: str) -> list[dict]:
+        """Return all normalized provenance records for a canonical event."""
+        return [dict(row) for row in self.connection.execute(
+            "SELECT * FROM event_sources WHERE event_key=? ORDER BY source_type,provenance_key",
+            (event_key,),
+        )]
 
     def mark_period(self, period: str, status: str, count: int = 0, error: str | None = None,
                     source_type: str | None = None) -> None:

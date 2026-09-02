@@ -59,25 +59,58 @@ python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 -
 
 Verification pages, malformed HTML, and empty calendars are rejected. Failed months remain `incomplete` and are retried; rerun `sync` after supplying legitimate input or after source access recovers.
 
-### Interactive-browser recovery
+### Ordinary Chrome handoff (recommended on macOS)
 
-When the headless browser is challenged, rerun sync with the recovery mode:
+Selenium-created sessions can receive a security verification page. Handoff
+instead starts the installed, visible Google Chrome application as an ordinary
+external process, with a dedicated `data/chrome-handoff-profile` (never your
+personal Chrome profile), and exposes its debugger only on `127.0.0.1`:
 
 ```bash
-python -m ff_calendar_toolkit.cli sync --interactive-browser
+python -m ff_calendar_toolkit.cli sync --browser-handoff
 ```
 
-This opens one visible Chrome window and reuses it for every requested month. If
-a verification page appears, complete it manually in Chrome; the toolkit never
-solves or bypasses the control. It keeps the window open for up to 10 minutes and
-continues only after recognizable calendar rows appear. Legitimately issued
-cookies and browser state are retained locally in `data/chrome-profile` for later
-runs (the directory is ignored by Git). Headless browsing remains the default.
+1. Use the Chrome window normally and wait until calendar event rows are visible.
+2. Return to Terminal and press Enter. There is no deadline; Ctrl-C cancels.
+3. Selenium then attaches to that same browser and uses it for every month.
+4. If access is challenged later, navigation pauses on that month. Establish
+   access manually in the same window and press Enter to retry it.
+
+No CAPTCHA or Cloudflare verification is solved, automated, evaded, or bypassed.
+The mode merely waits for the user to obtain legitimate access before attaching.
+It safely reuses an already-running dedicated handoff process, never kills normal
+personal Chrome, and only shuts down Chrome when this command launched it.
+
+The existing historical archive (through its actual local last event, currently
+April 7, 2025) is reused rather than downloaded or scraped again. Each successful
+month is committed immediately to SQLite, so an interruption preserves progress;
+rerun the same command to retry incomplete periods and resume. April's monthly
+events are idempotently upserted alongside the archive rows.
 
 The same mode is available for a bounded recovery, for example:
 
 ```bash
-python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 --interactive-browser
+python -m ff_calendar_toolkit.cli backfill --start 2025-04-01 --end today --browser-handoff
+```
+
+After synchronization, run `python -m ff_calendar_toolkit.cli validate --strict`.
+Canonical data is `data/forex_factory.sqlite`; deterministic CSV/Parquet files are
+in `data/exports`, and `data/dataset_manifest.json` reports actual coverage,
+missing/incomplete months, validation errors, duplicates, and export hashes.
+
+The older `--interactive-browser` ChromeDriver-created recovery mode remains
+available for compatibility, but ordinary Chrome handoff is preferred on macOS.
+
+After this change is merged, the complete macOS command is:
+
+```bash
+cd "$HOME/Forex_News_Calender" &&
+git switch main &&
+git pull --ff-only origin main &&
+source .venv/bin/activate &&
+caffeinate -dimsu python -m ff_calendar_toolkit.cli sync --browser-handoff &&
+python -m ff_calendar_toolkit.cli validate --strict &&
+open "$HOME/Forex_News_Calender/data/exports"
 ```
 
 ## Canonical data and identity
