@@ -20,6 +20,42 @@ def test_exact_impact_mapping():
     with pytest.raises(SourceError): impact("purple")
 
 
+@pytest.mark.parametrize(
+    ("css_class", "color", "level"),
+    [
+        (
+            "calendar__cell calendar__impact icon icon--ff-impact-ora "
+            "calendar__impact-icon calendar__impact-icon--print",
+            "orange",
+            "Medium",
+        ),
+        ("icon--ff-impact-red", "red", "High"),
+        ("icon--ff-impact-yel", "yellow", "Low"),
+        ("icon--ff-impact-gra", "gray", "Non-Economic/Holiday"),
+    ],
+)
+def test_production_abbreviated_impact_class_tokens(css_class, color, level):
+    assert impact(css_class) == (color, level)
+
+
+@pytest.mark.parametrize("word", ["decorative", "style-yel-value", "paragraph"])
+def test_impact_abbreviations_do_not_match_substrings(word):
+    with pytest.raises(SourceError):
+        impact(word)
+
+
+@pytest.mark.parametrize(
+    ("css_class", "expected"),
+    [
+        ("icon--ff-impact-orange", ("orange", "Medium")),
+        ("icon--ff-impact-yellow", ("yellow", "Low")),
+        ("icon--ff-impact-gray", ("gray", "Non-Economic/Holiday")),
+    ],
+)
+def test_full_impact_class_tokens_remain_supported(css_class, expected):
+    assert impact(css_class) == expected
+
+
 def test_archive_import_idempotency_and_revision(tmp_path):
     content=b"date,time,currency,impact,event,actual,forecast,previous\n2024-01-01,8:30am,USD,red,Jobs,1,2,3\n"
     rows=parse_archive(content); db=CalendarDatabase(tmp_path/"db.sqlite")
