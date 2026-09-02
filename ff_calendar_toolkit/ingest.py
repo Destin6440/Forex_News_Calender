@@ -32,6 +32,12 @@ BLOCK_MARKERS = (
     "just a moment",
 )
 VERIFICATION_PAGE_ERROR = "verification/security page received instead of calendar data"
+MONTH_DATA_TIME_RE = re.compile(
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+    r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+Data",
+    re.IGNORECASE,
+)
 
 
 class SourceError(RuntimeError): pass
@@ -43,6 +49,12 @@ class VerificationPageError(SourceError):
 
 def normalized_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def month_data_identity_label(value: str) -> str | None:
+    """Return the normalized identity suffix only for an exact Month Data label."""
+    stripped = value.strip()
+    return normalized_name(stripped) if MONTH_DATA_TIME_RE.fullmatch(stripped) else None
 
 
 def impact(value: str) -> tuple[str, str]:
@@ -76,7 +88,9 @@ def _date(value: str) -> date:
 def _time(value: str) -> tuple[time | None, bool]:
     raw = value.strip().lower()
     compact = raw.replace(" ", "")
-    if compact in {"allday", "tentative"} or re.fullmatch(r"day\s+[1-9]\d*", raw):
+    if (compact in {"allday", "tentative"}
+            or re.fullmatch(r"day\s+[1-9]\d*", raw)
+            or month_data_identity_label(raw) is not None):
         return None, True
     if not raw:
         return None, False
@@ -105,7 +119,14 @@ def canonical(raw: dict, source_type: str, source_period: str = "") -> dict:
     url = str(raw.get("source_url") or raw.get("url") or "").strip()
     if not source_id and url:
         match = re.search(r"(?:event|id)[=/.-](\d+)", url, re.I); source_id = match.group(1) if match else None
-    identity = "|".join((day.isoformat(), clock.strftime("%H:%M") if clock else "ALL_DAY", currency, normalized_name(name)))
+    # Preserve the established ALL_DAY fallback key for all existing non-clock
+    # labels. Only the newly supported Month Data labels need a suffix to keep
+    # otherwise identical delayed periods distinct.
+    month_data_label = month_data_identity_label(raw_time) if clock is None else None
+    time_identity = clock.strftime("%H:%M") if clock else "ALL_DAY"
+    if month_data_label:
+        time_identity += f":{month_data_label}"
+    identity = "|".join((day.isoformat(), time_identity, currency, normalized_name(name)))
     key = f"ff:{source_id}" if source_id else "derived:" + hashlib.sha256(identity.encode()).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
     return {

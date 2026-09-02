@@ -15,7 +15,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .ingest import SourceError, VerificationPageError, calendar_row_counts, parse_html
+from .ingest import (SourceError, VerificationPageError, calendar_row_counts,
+                     month_data_identity_label, parse_html)
 
 CALENDAR_URL = "https://www.forexfactory.com/calendar?month={month}"
 LANDING_URL = "https://www.forexfactory.com/calendar"
@@ -257,14 +258,20 @@ class ChromeHandoff:
 
     @staticmethod
     def _event_identity(event: dict) -> tuple:
-        return (event["date_et"], event.get("time_et"), event["currency"], event["event_name_normalized"])
+        # Only Month Data labels extend the legacy clockless identity. Other
+        # non-clock labels deliberately retain the established None component.
+        non_clock_label = None
+        if event.get("time_et") is None:
+            non_clock_label = month_data_identity_label(str(event.get("raw_time") or ""))
+        return (event["date_et"], event.get("time_et"), non_clock_label,
+                event["currency"], event["event_name_normalized"])
 
     def _sweep_month(self, url: str, period: str, max_duration: float,
                      interval: float, overlap: float) -> tuple[str, list[dict]]:
         deadline = self.monotonic() + max_duration
         self._scroll_to(0)
         accumulated: dict[str, dict] = {}
-        identities: dict[tuple, str] = {}
+        identities: dict[tuple, set[str]] = {}
         progress: list[int] = []
         grew_after_initial = False
         bottom_stable_passes = 0
@@ -292,18 +299,29 @@ class ChromeHandoff:
             before = len(accumulated)
             for event in snapshot:
                 identity = self._event_identity(event)
-                old_key = identities.get(identity)
                 key = event["event_key"]
-                if old_key and old_key != key:
-                    # The stable Forex Factory id wins if another viewport had
-                    # enough context only to derive the same event identity.
-                    if event.get("source_event_id"):
-                        accumulated.pop(old_key, None)
-                        accumulated[key] = event
-                        identities[identity] = key
+                if key in accumulated:
+                    accumulated[key] = event
+                    continue
+
+                matching_keys = identities.setdefault(identity, set())
+                if event.get("source_event_id"):
+                    # Replace only derived versions of this natural identity.
+                    # Different stable source IDs always represent distinct
+                    # upstream rows and must coexist even when all other fields
+                    # are identical.
+                    derived_keys = [old_key for old_key in matching_keys
+                                    if not accumulated[old_key].get("source_event_id")]
+                    for old_key in derived_keys:
+                        accumulated.pop(old_key)
+                        matching_keys.remove(old_key)
+                elif any(accumulated[old_key].get("source_event_id")
+                         for old_key in matching_keys):
+                    # A richer source-ID record from another viewport already
+                    # represents this derived event.
                     continue
                 accumulated[key] = event
-                identities[identity] = key
+                matching_keys.add(key)
             if len(accumulated) > before:
                 if progress:
                     grew_after_initial = True

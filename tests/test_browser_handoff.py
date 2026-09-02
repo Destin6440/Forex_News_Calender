@@ -63,6 +63,24 @@ def virtual_page(batches, active):
     return "".join(rows) + "</table>"
 
 
+def same_day_virtual_page(events, active):
+    """Build one virtualized October 22 day with selected events materialized."""
+    rows = ['<table class="calendar__table"><tr class="calendar__row calendar__row--day-breaker">'
+            '<td class="calendar__date">Wed Oct 22 2025</td></tr>']
+    for index, (event_id, name, clock) in enumerate(events):
+        if index not in active:
+            rows.append('<tr class="calendar__row"><td class="calendar__cell--blank"></td></tr>')
+            continue
+        id_attribute = f' data-event-id="{event_id}"' if event_id else ""
+        link_start = f'<a href="/calendar/{event_id}">' if event_id else ""
+        link_end = "</a>" if event_id else ""
+        rows.append(f'''<tr class="calendar__row"{id_attribute}>
+            <td class="calendar__time">{clock}</td><td class="calendar__currency">GBP</td>
+            <td class="calendar__impact icon--ff-impact-yellow"></td>
+            <td class="calendar__event">{link_start}{name}{link_end}</td></tr>''')
+    return "".join(rows) + "</table>"
+
+
 class VirtualDriver:
     def __init__(self, pages, *, challenge_at=None):
         self.pages = pages
@@ -129,6 +147,52 @@ def test_virtualized_sweep_unions_overlapping_snapshots_and_preserves_context(tm
     assert driver.urls == ["https://www.forexfactory.com/calendar?month=apr.2025"]
     assert driver.contexts == 1
     assert any("2 → 4 → 5 events" in message for message in messages)
+    browser.close()
+
+
+def test_virtualized_sweep_accepts_production_month_data_sequence(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    labels = [
+        "Feb Data", "Mar Data", "Apr Data", "May Data", "June Data", "July Data", "Aug Data",
+    ]
+    production_rows = [
+        (str(600 + index * 2 + offset), name, label)
+        for index, label in enumerate(labels)
+        for offset, name in enumerate(("PPI Input m/m", "PPI Output m/m"))
+    ]
+    pages = [same_day_virtual_page(production_rows, active) for active in (
+        set(range(0, 6)), set(range(4, 11)), set(range(9, 14)),
+    )]
+    browser = attached_browser(tmp_path, VirtualDriver(pages))
+
+    _html, events = browser.retrieve(date(2025, 10, 1))
+
+    assert len(events) == 14
+    assert [event["event_name"] for event in events].count("PPI Input m/m") == 7
+    assert [event["event_name"] for event in events].count("PPI Output m/m") == 7
+    assert [event["raw_time"] for event in events] == [row[2] for row in production_rows]
+    assert all(event["all_day"] is True for event in events)
+    assert all(event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+               for event in events)
+    assert len({event["source_event_id"] for event in events}) == 14
+    assert len({event["event_key"] for event in events}) == 14
+    browser.close()
+
+
+def test_virtualized_sweep_replaces_derived_duplicate_with_source_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    derived = [(None, "PPI Input m/m", "Feb Data")]
+    identified = [("98765", "PPI Input m/m", "Feb Data")]
+    pages = [same_day_virtual_page(events, {0}) for events in (derived, identified, identified)]
+    browser = attached_browser(tmp_path, VirtualDriver(pages))
+
+    _html, events = browser.retrieve(date(2025, 10, 1))
+
+    assert len(events) == 1
+    assert events[0]["source_event_id"] == "98765"
+    assert events[0]["event_key"] == "ff:98765"
     browser.close()
 
 
