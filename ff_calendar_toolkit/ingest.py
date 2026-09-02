@@ -45,6 +45,12 @@ REFERENCE_DATE_TIME_RE = re.compile(
     r"(?P<day>[1-9]|[12]\d|3[01])(?P<suffix>st|nd|rd|th)",
     re.IGNORECASE,
 )
+ORDINAL_DAY_RANGE_TIME_RE = re.compile(
+    r"(?P<start>[1-9]|[12]\d|3[01])(?P<start_suffix>st|nd|rd|th)"
+    r"\s*[-\u2013\u2014]\s*"
+    r"(?P<end>[1-9]|[12]\d|3[01])(?P<end_suffix>st|nd|rd|th)",
+    re.IGNORECASE,
+)
 MONTH_NUMBERS = {
     "jan": 1, "january": 1, "feb": 2, "february": 2,
     "mar": 3, "march": 3, "apr": 4, "april": 4, "may": 5,
@@ -65,6 +71,10 @@ def normalized_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def _ordinal_suffix(day: int) -> str:
+    return "th" if 10 < day % 100 < 14 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
 def non_clock_period_identity_label(value: str) -> str | None:
     """Return an identity suffix for an exact supported non-clock period label.
 
@@ -75,15 +85,22 @@ def non_clock_period_identity_label(value: str) -> str | None:
     stripped = value.strip()
     if MONTH_DATA_TIME_RE.fullmatch(stripped):
         return normalized_name(stripped)
+    range_match = ORDINAL_DAY_RANGE_TIME_RE.fullmatch(stripped)
+    if range_match:
+        start = int(range_match.group("start"))
+        end = int(range_match.group("end"))
+        if (start <= end
+                and range_match.group("start_suffix").casefold() == _ordinal_suffix(start)
+                and range_match.group("end_suffix").casefold() == _ordinal_suffix(end)):
+            return normalized_name(stripped)
+        return None
     match = REFERENCE_DATE_TIME_RE.fullmatch(stripped)
     if not match:
         return None
     day = int(match.group("day"))
     month = MONTH_NUMBERS[match.group("month").casefold()]
     maximum_day = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[month - 1]
-    expected_suffix = (
-        "th" if 10 < day % 100 < 14 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-    )
+    expected_suffix = _ordinal_suffix(day)
     if day > maximum_day or match.group("suffix").casefold() != expected_suffix:
         return None
     return normalized_name(stripped)

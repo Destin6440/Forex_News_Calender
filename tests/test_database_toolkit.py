@@ -65,6 +65,22 @@ def test_invalid_or_inexact_month_ordinal_reference_dates_are_rejected(label):
         _time(label)
 
 
+@pytest.mark.parametrize("label", [
+    "7th-14th", "7th - 14th", "7th–14th", "7th—14th", "1st-3rd", "21st-31st",
+])
+def test_ordinal_day_ranges_are_non_clock_times(label):
+    assert _time(label) == (None, True)
+
+
+@pytest.mark.parametrize("label", [
+    "7-14", "7th to 14th", "14th-7th", "0th-14th", "7th-32nd",
+    "7st-14th", "7th-14st", "7th-14th Extra",
+])
+def test_invalid_or_inexact_ordinal_day_ranges_are_rejected(label):
+    with pytest.raises(SourceError, match="malformed time"):
+        _time(label)
+
+
 @pytest.mark.parametrize("label", ["Daylight", "Someday 4", "Day Four", "Day 0", "Day -1"])
 def test_unrelated_day_labels_are_rejected(label):
     with pytest.raises(SourceError, match="malformed time"):
@@ -103,6 +119,49 @@ def test_reference_date_labels_are_clockless_and_distinguish_derived_keys():
     assert september["raw_time"] == "Sep 27th"
     assert september["all_day"] is True
     assert september["time_et"] is september["datetime_et"] is september["datetime_utc"] is None
+
+
+def test_ordinal_day_range_is_canonical_clockless_event_and_distinguishes_derived_keys():
+    identified = canonical({
+        "date": "2026-09-02", "time": "7th-14th", "currency": "EUR",
+        "event": "German WPI m/m", "impact": "yellow", "source_event_id": "92002",
+    }, "calendar_html", "2026-09")
+    first_window = canonical(raw(clock="7th-14th", event="German WPI m/m"),
+                             "calendar_html", "2026-09")
+    second_window = canonical(raw(clock="15th-21st", event="German WPI m/m"),
+                              "calendar_html", "2026-09")
+
+    assert first_window["event_key"] != second_window["event_key"]
+    assert identified["event_key"] == "ff:92002"
+    assert identified["currency"] == "EUR"
+    assert identified["event_name"] == "German WPI m/m"
+    assert identified["raw_time"] == "7th-14th"
+    assert identified["all_day"] is True
+    assert identified["time_et"] is identified["datetime_et"] is identified["datetime_utc"] is None
+    assert first_window["raw_time"] == "7th-14th"
+    assert first_window["all_day"] is True
+    assert first_window["time_et"] is first_window["datetime_et"] is first_window["datetime_utc"] is None
+
+
+def test_production_ordinal_range_html_row_does_not_inherit_neighboring_clock():
+    html = '''<table><tr class="calendar__row calendar__row--day-breaker">
+        <td class="calendar__date">Wed Sep 2 2026</td></tr>
+        <tr class="calendar__row" data-event-id="92001">
+        <td class="calendar__time">8:30am</td><td class="calendar__currency">USD</td>
+        <td class="calendar__impact icon--ff-impact-red"></td>
+        <td class="calendar__event">Neighboring Release</td></tr>
+        <tr class="calendar__row" data-event-id="92002">
+        <td class="calendar__time">7th-14th</td><td class="calendar__currency">EUR</td>
+        <td class="calendar__impact icon--ff-impact-yellow"></td>
+        <td class="calendar__event">German WPI m/m</td></tr></table>'''
+
+    events = parse_html(html, "https://www.forexfactory.com/calendar", "2026-09")
+    wpi = next(event for event in events if event["source_event_id"] == "92002")
+
+    assert wpi["event_key"] == "ff:92002"
+    assert wpi["raw_time"] == "7th-14th"
+    assert wpi["all_day"] is True
+    assert wpi["time_et"] is wpi["datetime_et"] is wpi["datetime_utc"] is None
 
 
 def test_production_reference_date_html_rows_with_source_ids_all_survive():
