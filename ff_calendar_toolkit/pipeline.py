@@ -144,9 +144,13 @@ class CalendarBrowser:
 
 
 def backfill(db: CalendarDatabase, start: date, end: date, html_directory: Path | None = None,
-             interactive_browser: bool = False, browser: CalendarBrowser | None = None) -> int:
+             interactive_browser: bool = False, browser_handoff: bool = False,
+             browser: CalendarBrowser | None = None) -> int:
     total=0
     owned_browser = browser is None
+    if browser is None and browser_handoff:
+        from .browser_handoff import ChromeHandoff
+        browser = ChromeHandoff()
     browser = browser or CalendarBrowser(interactive_browser)
     try:
         for month in month_range(start, end):
@@ -214,15 +218,30 @@ def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = 
 
 
 def sync(db: CalendarDatabase, archive_file: str | None = None,
-         interactive_browser: bool = False) -> dict:
+         interactive_browser: bool = False, browser_handoff: bool = False) -> dict:
     bootstrap(db,archive_file)
     next_month=(date.today().replace(day=28)+timedelta(days=4)).replace(day=1)
     # One browser (and therefore one cookie session) is shared by gaps and the
     # revision window. Bootstrap remains idempotent and reuses existing rows.
-    with CalendarBrowser(interactive_browser) as browser:
+    if browser_handoff:
+        from .browser_handoff import ChromeHandoff
+        browser_context = ChromeHandoff()
+    else:
+        browser_context = CalendarBrowser(interactive_browser)
+    with browser_context as browser:
         # Explicitly detect gaps after the archive. Failed periods are absent/incomplete and retried.
-        covered={r[0] for r in db.connection.execute("SELECT period FROM periods WHERE status='complete'")}
-        for month in month_range(date(2025,4,1),next_month):
+        # Archive period records describe rows present in the archive, not proof
+        # that its final month is complete. Only a successful monthly-page ingest
+        # closes tail coverage (notably the April 8-30, 2025 archive tail).
+        covered={r[0] for r in db.connection.execute(
+            "SELECT period FROM periods WHERE status='complete' AND source_type='calendar_html'"
+        )}
+        archive_latest = db.connection.execute(
+            "SELECT MAX(e.date_et) FROM events e JOIN event_sources s ON s.event_key=e.event_key "
+            "WHERE s.source_type='huggingface_archive'"
+        ).fetchone()[0]
+        first_tail_month = date.fromisoformat(archive_latest).replace(day=1) if archive_latest else date(2025,4,1)
+        for month in month_range(first_tail_month,next_month):
             if month.strftime("%Y-%m") not in covered:
                 backfill(db,month,month,browser=browser)
         start=max(date(2025,4,8), date.today()-timedelta(days=60))
