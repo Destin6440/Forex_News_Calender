@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 IMPACTS = {"red": "High", "orange": "Medium", "yellow": "Low", "gray": "Non-Economic/Holiday"}
-BLOCK_MARKERS = ("cf-chl-", "captcha", "verify you are human", "attention required", "cloudflare", "security check")
+BLOCK_MARKERS = (
+    "cf-chl-",
+    "captcha",
+    "verify you are human",
+    "attention required",
+    "security check",
+    "just a moment",
+)
 VERIFICATION_PAGE_ERROR = "verification/security page received instead of calendar data"
 
 
@@ -149,25 +156,35 @@ class _CalendarHTML(HTMLParser):
 
 def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> list[dict]:
     text = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-    lowered=text.lower()
-    if any(marker in lowered for marker in BLOCK_MARKERS):
-        raise VerificationPageError(VERIFICATION_PAGE_ERROR)
     parser=_CalendarHTML(); parser.feed(text)
-    if not parser.rows: raise SourceError("page contains no recognizable calendar rows")
+    has_verification_marker = any(marker in text.lower() for marker in BLOCK_MARKERS)
+    if not parser.rows:
+        if has_verification_marker:
+            raise VerificationPageError(VERIFICATION_PAGE_ERROR)
+        raise SourceError("page contains no recognizable calendar rows")
     result=[]; current_date=None; current_time=None
     for item in parser.rows:
         cells=item["cells"]
         if cells.get("date"): current_date=cells["date"]
-        if not current_date: continue
         # Empty time cells carry only within this date; a new date resets the carry.
         if cells.get("date") and "time" not in cells: current_time=None
         if cells.get("time"): current_time=cells["time"]
-        if not cells.get("event") or not cells.get("currency"): continue
+        event_name = cells.get("event")
+        currency = cells.get("currency")
+        if not event_name and not currency:
+            continue
+        if not event_name or not currency:
+            raise SourceError("calendar row is missing an event name or currency")
+        if not current_date:
+            raise SourceError("calendar event row has no date and no preceding date")
         imp=cells.get("impact") or item.get("impact_class", "")
         parsed_date = current_date
         if period and not re.search(r"\d{4}", parsed_date): parsed_date += " " + period[:4]
         raw={**cells, "date":parsed_date, "time":current_time or "all day", "impact":imp,
              "url":urljoin(source_url, item.get("url", ""))}
         result.append(canonical(raw, "saved_html" if source_url.startswith("file:") else "calendar_html", period))
-    if not result: raise SourceError("calendar rows contained no events")
+    if not result:
+        if has_verification_marker:
+            raise VerificationPageError(VERIFICATION_PAGE_ERROR)
+        raise SourceError("calendar rows contained no events")
     return result
