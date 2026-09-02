@@ -74,11 +74,14 @@ def _date(value: str) -> date:
 
 
 def _time(value: str) -> tuple[time | None, bool]:
-    raw = value.strip().lower().replace(" ", "")
-    if raw in {"", "all day", "allday", "tentative", "day 1", "day 2"}:
-        return None, raw not in {""}
+    raw = value.strip().lower()
+    compact = raw.replace(" ", "")
+    if compact in {"allday", "tentative"} or re.fullmatch(r"day\s+[1-9]\d*", raw):
+        return None, True
+    if not raw:
+        return None, False
     for fmt in ("%I:%M%p", "%I%p", "%H:%M"):
-        try: return datetime.strptime(raw, fmt).time(), False
+        try: return datetime.strptime(compact, fmt).time(), False
         except ValueError: pass
     raise SourceError(f"malformed time: {value!r}")
 
