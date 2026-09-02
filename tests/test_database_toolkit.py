@@ -7,8 +7,9 @@ import pytest
 
 from ff_calendar_toolkit.configuration import find_configurations
 from ff_calendar_toolkit.database import CalendarDatabase
-from ff_calendar_toolkit.ingest import SourceError, canonical, impact, parse_archive, parse_html
-from ff_calendar_toolkit.pipeline import validate
+from ff_calendar_toolkit.ingest import SourceError, _time, canonical, impact, parse_archive, parse_html
+from ff_calendar_toolkit.pipeline import (CATEGORY_PREVALENCE_THRESHOLD,
+                                          SPARSE_MONTH_MINIMUM_RATIO, validate)
 
 
 def raw(day="2024-03-10", clock="1:30pm", event="Employment Change", impact_value="red", **kw):
@@ -18,6 +19,40 @@ def raw(day="2024-03-10", clock="1:30pm", event="Employment Change", impact_valu
 def test_exact_impact_mapping():
     assert [impact(x) for x in ("red","orange","yellow","gray")]==[("red","High"),("orange","Medium"),("yellow","Low"),("gray","Non-Economic/Holiday")]
     with pytest.raises(SourceError): impact("purple")
+
+
+@pytest.mark.parametrize("label", ["Day 1", "Day 2", "Day 4", "Day 10"])
+def test_numbered_multi_day_labels_are_all_day(label):
+    assert _time(label) == (None, True)
+
+
+@pytest.mark.parametrize("label", ["All Day", "all day", "Tentative"])
+def test_named_non_clock_labels_are_all_day(label):
+    assert _time(label) == (None, True)
+
+
+@pytest.mark.parametrize("label", ["Daylight", "Someday 4", "Day Four", "Day 0", "Day -1"])
+def test_unrelated_day_labels_are_rejected(label):
+    with pytest.raises(SourceError, match="malformed time"):
+        _time(label)
+
+
+def test_day_four_canonical_event_has_no_clock_time_and_preserves_raw_value():
+    event = canonical(raw(clock="Day 4"), "calendar_html", "2026-09")
+    assert event["all_day"] is True
+    assert event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+    assert event["raw_time"] == "Day 4"
+
+
+def test_day_four_html_event_is_canonical_all_day_event():
+    html = '''<table><tr class="calendar__row"><td class="calendar__date">Wed Sep 2</td>
+    <td class="calendar__time">Day 4</td><td class="calendar__currency">USD</td>
+    <td class="calendar__impact icon--ff-impact-red"></td>
+    <td class="calendar__event">Multi-day Meeting</td></tr></table>'''
+    [event] = parse_html(html, "https://www.forexfactory.com/calendar", "2026-09")
+    assert event["all_day"] is True
+    assert event["time_et"] is None
+    assert event["raw_time"] == "Day 4"
 
 
 @pytest.mark.parametrize(
@@ -140,6 +175,68 @@ def test_deterministic_csv_and_duplicate_validation(tmp_path):
     db.export(["csv"],tmp_path/"a"); db.export(["csv"],tmp_path/"b")
     assert (tmp_path/"a/forex_factory_calendar_full.csv").read_bytes()==(tmp_path/"b/forex_factory_calendar_full.csv").read_bytes()
     manifest,errors=validate(db); assert manifest["duplicate_count"]==0
+
+
+def _coverage_records(month, source_type, count=8):
+    currencies = ("USD", "EUR", "GBP", "JPY")
+    impacts = ("red", "orange", "yellow", "gray")
+    return [canonical({"date": f"{month}-{index + 1:02d}", "time": "8:30am",
+        "currency": currencies[index % len(currencies)], "impact": impacts[index % len(impacts)],
+        "event": f"Event {month} {index}"}, source_type, month) for index in range(count)]
+
+
+def test_manifest_audits_month_counts_sources_and_filtered_browser_month(tmp_path):
+    db = CalendarDatabase(tmp_path / "db.sqlite")
+    for month in ("2024-01", "2024-02", "2024-03"):
+        records = _coverage_records(month, "huggingface_archive")
+        db.upsert(records); db.mark_period(month, "complete", len(records), source_type="huggingface_archive")
+    sparse = _coverage_records("2025-01", "calendar_html", 1)
+    db.upsert(sparse); db.mark_period("2025-01", "complete", 1, source_type="calendar_html")
+
+    manifest, errors = validate(db, strict=True, write_manifest=False)
+
+    assert SPARSE_MONTH_MINIMUM_RATIO == 0.25
+    assert CATEGORY_PREVALENCE_THRESHOLD == 0.80
+    assert manifest["event_count_by_month"]["2025-01"] == 1
+    assert manifest["count_by_month_and_impact_color"]["2025-01"] == {"red": 1}
+    assert manifest["count_by_month_and_currency"]["2025-01"] == {"USD": 1}
+    assert manifest["source_count_by_month"]["2025-01"] == {"calendar_html": 1}
+    assert manifest["suspiciously_sparse_completed_months"] == ["2025-01"]
+    assert manifest["completeness_baseline"]["median_events_per_complete_archive_month"] == 8
+    assert any("suspiciously sparse or filtered" in error for error in errors)
+
+
+def test_expected_category_audit_rejects_red_orange_only_and_narrow_currency(tmp_path):
+    db = CalendarDatabase(tmp_path / "db.sqlite")
+    for month in ("2024-01", "2024-02", "2024-03"):
+        archive = _coverage_records(month, "huggingface_archive")
+        db.upsert(archive); db.mark_period(month, "complete", len(archive), source_type="huggingface_archive")
+    filtered = _coverage_records("2025-01", "calendar_html")
+    for record in filtered:
+        record["impact_color"] = "red" if record["impact_color"] in {"red", "yellow"} else "orange"
+        record["impact_level"] = "High" if record["impact_color"] == "red" else "Medium"
+        record["currency"] = "USD"
+    db.upsert(filtered); db.mark_period("2025-01", "complete", len(filtered), source_type="calendar_html")
+    manifest, _errors = validate(db, strict=True, write_manifest=False)
+    reasons = manifest["browser_month_issues"]["2025-01"]
+    assert "missing normally expected impact colors: gray, yellow" in reasons
+    assert "missing normally expected major currencies: EUR, GBP, JPY" in reasons
+
+
+def test_complete_category_page_passes_and_current_future_are_exempt(tmp_path):
+    db = CalendarDatabase(tmp_path / "db.sqlite")
+    for month in ("2024-01", "2024-02", "2024-03"):
+        archive = _coverage_records(month, "huggingface_archive")
+        db.upsert(archive); db.mark_period(month, "complete", len(archive), source_type="huggingface_archive")
+    complete = _coverage_records("2025-01", "calendar_html")
+    db.upsert(complete); db.mark_period("2025-01", "complete", len(complete), source_type="calendar_html")
+    current = datetime.now().strftime("%Y-%m")
+    partial = [canonical({"date": f"{current}-01", "time": "8:30am", "currency": "USD",
+        "impact": "red", "event": "Partial current event"}, "calendar_html", current)]
+    db.upsert(partial); db.mark_period(current, "complete", 1, source_type="calendar_html")
+    manifest, _errors = validate(db, strict=True, write_manifest=False)
+    assert "2025-01" not in manifest["browser_month_issues"]
+    assert current not in manifest["browser_month_issues"]
 
 
 def test_incomplete_period_is_retained_for_retry(tmp_path):

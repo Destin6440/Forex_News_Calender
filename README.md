@@ -93,6 +93,19 @@ The same mode is available for a bounded recovery, for example:
 python -m ff_calendar_toolkit.cli backfill --start 2025-04-01 --end today --browser-handoff
 ```
 
+Use `sync --force-refresh-start YYYY-MM-DD` to deliberately revisit completed months in
+the same browser session used for gap recovery and revision updates. Browser pages
+that contain fewer than 25% of the median complete archive-month event count, or
+omit currencies/impact colors present in at least 80% of complete archive months,
+remain incomplete. Parsed rows are retained, so a later unfiltered refresh adds
+omitted events idempotently.
+
+Pass `--yearly-excel-dir "$HOME/Desktop/News Data"` to create one validated,
+reconciled `.xlsx` workbook per year. The maintained `openpyxl` dependency in
+`requirements.txt` provides typed dates/times, Excel tables, and workbook
+verification. The standalone equivalent is
+`python -m ff_calendar_toolkit.cli export-yearly-excel --output-dir "$HOME/Desktop/News Data"`.
+
 After synchronization, run `python -m ff_calendar_toolkit.cli validate --strict`.
 Canonical data is `data/forex_factory.sqlite`; deterministic CSV/Parquet files are
 in `data/exports`, and `data/dataset_manifest.json` reports actual coverage,
@@ -108,9 +121,13 @@ cd "$HOME/Forex_News_Calender" &&
 git switch main &&
 git pull --ff-only origin main &&
 source .venv/bin/activate &&
-caffeinate -dimsu python -m ff_calendar_toolkit.cli sync --browser-handoff &&
+python -m pip install -r requirements.txt &&
+caffeinate -dimsu python -m ff_calendar_toolkit.cli sync \
+  --browser-handoff \
+  --force-refresh-start 2025-04-01 \
+  --yearly-excel-dir "$HOME/Desktop/News Data" &&
 python -m ff_calendar_toolkit.cli validate --strict &&
-open "$HOME/Forex_News_Calender/data/exports"
+open "$HOME/Desktop/News Data"
 ```
 
 ## Canonical data and identity

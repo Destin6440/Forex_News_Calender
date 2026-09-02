@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT = "127.0.0.1", 8501
 
-DATA_COMMANDS = {"bootstrap", "backfill", "update", "sync", "validate", "export", "import-html", "find-configuration"}
+DATA_COMMANDS = {"bootstrap", "backfill", "update", "sync", "validate", "export", "export-yearly-excel", "import-html", "find-configuration"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,10 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--archive-file")
     sync.add_argument("--interactive-browser", action="store_true", help="Show Chrome and wait for manual verification when required")
     sync.add_argument("--browser-handoff", action="store_true", help="Hand an ordinary dedicated Chrome session to Selenium after Enter")
+    sync.add_argument("--force-refresh-start", type=_cli_date, metavar="YYYY-MM-DD", help="Re-fetch every month from this date through the current month")
+    sync.add_argument("--yearly-excel-dir", type=Path, help="Generate reconciled yearly Excel workbooks after strict validation")
     validate = subparsers.add_parser("validate", help="Validate canonical database")
     validate.add_argument("--strict", action="store_true")
     export = subparsers.add_parser("export", help="Create deterministic complete exports")
     export.add_argument("--format", nargs="+", choices=["csv", "parquet"], required=True)
+    yearly = subparsers.add_parser("export-yearly-excel", help="Strictly validate and atomically create yearly Excel workbooks")
+    yearly.add_argument("--output-dir", type=Path, required=True)
     imported = subparsers.add_parser("import-html", help="Import a legitimately saved calendar page")
     imported.add_argument("path", type=Path); imported.add_argument("--period", help="YYYY-MM (inferred from events when omitted)")
     find = subparsers.add_parser("find-configuration", help="Find historical same-day event configurations")
@@ -207,10 +211,15 @@ def run_data_command(args) -> int:
         if args.command=="bootstrap": print(f"Imported {bootstrap(db,args.archive_file)} archive rows")
         elif args.command=="backfill": print(f"Upserted {backfill(db,_cli_date(args.start),_cli_date(args.end),args.html_directory,args.interactive_browser,args.browser_handoff)} rows")
         elif args.command=="update": print(f"Upserted {update(db)} weekly rows")
-        elif args.command=="sync": print(json.dumps(sync(db,args.archive_file,args.interactive_browser,args.browser_handoff),indent=2))
+        elif args.command=="sync": print(json.dumps(sync(db,args.archive_file,args.interactive_browser,args.browser_handoff,args.force_refresh_start,args.yearly_excel_dir),indent=2))
         elif args.command=="validate":
             manifest,errors=validate(db,args.strict); print(json.dumps(manifest,indent=2)); return 1 if errors else 0
         elif args.command=="export": print(json.dumps(db.export(args.format),indent=2))
+        elif args.command=="export-yearly-excel":
+            manifest,errors=validate(db,strict=True)
+            if errors: raise SourceError("validation failed: "+"; ".join(errors))
+            from .excel_export import export_yearly_excel
+            print(json.dumps([str(path) for path in export_yearly_excel(db,args.output_dir,manifest)],indent=2))
         elif args.command=="import-html":
             rows=parse_html(args.path.read_bytes(),args.path.resolve().as_uri(),args.period or "")
             db.upsert(rows)

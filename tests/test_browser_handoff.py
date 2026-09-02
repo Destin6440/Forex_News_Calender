@@ -79,6 +79,17 @@ def test_external_chrome_is_localhost_only_and_attach_occurs_after_enter(tmp_pat
     assert process.terminated
 
 
+def test_handoff_reminds_user_to_clear_calendar_filters(tmp_path):
+    messages = []
+    browser = ChromeHandoff(tmp_path / "profile", input_fn=lambda: None, output=messages.append,
+        ps=lambda: "", popen=lambda *_args, **_kwargs: Process(),
+        urlopen=lambda *_args, **_kwargs: Response(), driver_factory=lambda _options: Driver([CALENDAR]),
+        options_factory=Options, sleep=lambda _seconds: None, chrome_path="/fake/Chrome")
+    browser.retrieve(date(2025, 4, 1))
+    assert "Before pressing Enter, make sure Forex Factory is displaying all currencies and all impact levels, with no research-specific calendar filter active." in messages[0]
+    browser.close()
+
+
 def test_existing_dedicated_debug_chrome_is_reused_and_not_terminated(tmp_path):
     profile = (tmp_path / "profile").resolve()
     launched = []
@@ -220,6 +231,37 @@ def test_completed_month_stays_saved_when_a_later_month_fails(tmp_path):
     statuses = {row["period"]: row["status"] for row in db.connection.execute("SELECT * FROM periods")}
     assert statuses == {"2025-04": "complete", "2025-05": "incomplete"}
     assert len(db.rows()) == 1
+    db.close()
+
+
+def test_filtered_import_then_forced_full_import_adds_missing_without_duplicates(tmp_path):
+    currencies = ("USD", "EUR", "GBP", "JPY")
+    impacts = ("red", "orange", "yellow", "gray")
+    def records(month, source, count=8):
+        return [canonical({"date": f"{month}-{index + 1:02d}", "time": "8:30am",
+            "currency": currencies[index % 4], "impact": impacts[index % 4],
+            "event": f"Release {month} {index}"}, source, month) for index in range(count)]
+
+    db = CalendarDatabase(tmp_path / "calendar.sqlite")
+    for month in ("2024-01", "2024-02", "2024-03"):
+        archive = records(month, "huggingface_archive")
+        db.upsert(archive); db.mark_period(month, "complete", len(archive), source_type="huggingface_archive")
+
+    full = records("2025-01", "calendar_html")
+    class SparseBrowser:
+        def retrieve(self, _month): return CALENDAR, full[:1]
+    with pytest.raises(SourceError, match="failed completeness audit"):
+        backfill(db, date(2025, 1, 1), date(2025, 1, 31), browser=SparseBrowser())
+    assert len([row for row in db.rows() if row["date_et"].startswith("2025-01")]) == 1
+    assert db.connection.execute("SELECT status FROM periods WHERE period='2025-01'").fetchone()[0] == "incomplete"
+
+    class FullBrowser:
+        def retrieve(self, _month): return CALENDAR, full
+    assert backfill(db, date(2025, 1, 1), date(2025, 1, 31), browser=FullBrowser()) == 8
+    month_rows = [row for row in db.rows() if row["date_et"].startswith("2025-01")]
+    assert len(month_rows) == 8
+    assert len({row["event_key"] for row in month_rows}) == 8
+    assert db.connection.execute("SELECT status FROM periods WHERE period='2025-01'").fetchone()[0] == "complete"
     db.close()
 
 

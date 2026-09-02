@@ -167,7 +167,9 @@ class ChromeHandoff:
             return
         self._wait_for_user(
             "Use the open Chrome window normally. Wait until the Forex Factory calendar "
-            "and its event rows are visible. Then return here and press Enter. "
+            "and its event rows are visible. Before pressing Enter, make sure Forex Factory "
+            "is displaying all currencies and all impact levels, with no research-specific "
+            "calendar filter active. Then return here and press Enter. "
             "Press Ctrl-C to cancel."
         )
         if self.options_factory is None:
