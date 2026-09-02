@@ -89,7 +89,12 @@ def non_clock_period_identity_label(value: str) -> str | None:
     if range_match:
         start = int(range_match.group("start"))
         end = int(range_match.group("end"))
-        if (start <= end
+        # Descending ordinals are valid only for the short, conservative
+        # windows Forex Factory uses when a release may fall in the following
+        # month.  Other descending ranges remain malformed rather than being
+        # interpreted as cross-month periods.
+        valid_window = start <= end or (start >= 20 and end <= 7)
+        if (valid_window
                 and range_match.group("start_suffix").casefold() == _ordinal_suffix(start)
                 and range_match.group("end_suffix").casefold() == _ordinal_suffix(end)):
             return normalized_name(stripped)
