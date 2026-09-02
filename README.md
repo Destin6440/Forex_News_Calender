@@ -59,9 +59,39 @@ python -m ff_calendar_toolkit.cli backfill --start 2025-05-01 --end 2025-05-31 -
 
 Verification pages, malformed HTML, and empty calendars are rejected. Failed months remain `incomplete` and are retried; rerun `sync` after supplying legitimate input or after source access recovers.
 
-### Interactive-browser recovery
+### Ordinary-Chrome handoff (recommended)
 
-When the headless browser is challenged, rerun sync with the recovery mode:
+For a full unattended month sequence after one legitimate manual page load, use:
+
+```bash
+python -m ff_calendar_toolkit.cli sync --browser-handoff
+```
+
+The toolkit launches an ordinary visible Chrome process with a dedicated local
+profile and opens the first missing month before Selenium is connected. Wait
+until real calendar rows are visible, complete any verification manually if it
+appears, then return to Terminal and press Enter. Only then does the toolkit
+attach to that already-open browser and continue through every remaining month
+using the same session. It waits five seconds between months by default. If a
+verification page reappears, the importer pauses and returns control to you; it
+never clicks, solves, hides, or bypasses the challenge.
+
+The handoff profile is stored under `data/chrome-handoff-profile` and is ignored
+by Git. `--browser-handoff` and `--interactive-browser` are mutually exclusive.
+The handoff mode is also available for bounded backfills:
+
+```bash
+python -m ff_calendar_toolkit.cli backfill \
+  --start 2025-04-01 --end today --browser-handoff
+```
+
+The archive ends on 2025-04-07, so April 2025 is intentionally treated as a
+partial month and retrieved again. Existing databases that previously marked
+that month complete are repaired automatically during the next sync.
+
+### Selenium interactive-browser recovery (legacy)
+
+The older Selenium-created recovery mode remains available:
 
 ```bash
 python -m ff_calendar_toolkit.cli sync --interactive-browser

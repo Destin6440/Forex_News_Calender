@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,7 +24,10 @@ WEEKLY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 CALENDAR_URL = "https://www.forexfactory.com/calendar?month={month}"
 DATA = Path("data")
 CHROME_PROFILE = DATA / "chrome-profile"
+HANDOFF_PROFILE = DATA / "chrome-handoff-profile"
 INTERACTIVE_WAIT_SECONDS = 10 * 60
+HANDOFF_START_TIMEOUT_SECONDS = 30
+ARCHIVE_LAST_DATE = date(2025, 4, 7)
 
 
 def get(url: str, timeout: int = 60) -> bytes:
@@ -55,9 +61,38 @@ def bootstrap(db: CalendarDatabase, archive_file: str | None = None) -> int:
         filename = sorted(files, key=lambda x: (not x.endswith(".parquet"), x))[0]
         content = get(f"{ARCHIVE_REPO}/resolve/main/{filename}")
     rows = parse_archive(content, filename); db.upsert(rows)
+    latest_archive_date = max(date.fromisoformat(r["date_et"]) for r in rows)
     for month in sorted({r["date_et"][:7] for r in rows}):
-        count=sum(r["date_et"].startswith(month) for r in rows); db.mark_period(month, "complete", count, source_type="huggingface_archive")
+        count=sum(r["date_et"].startswith(month) for r in rows)
+        is_partial_tail = month == latest_archive_date.strftime("%Y-%m") and latest_archive_date.day != (
+            (latest_archive_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        ).day
+        db.mark_period(
+            month,
+            "incomplete" if is_partial_tail else "complete",
+            count,
+            error=(f"archive ends on {latest_archive_date.isoformat()}" if is_partial_tail else None),
+            source_type="huggingface_archive",
+        )
     return len(rows)
+
+
+def repair_existing_partial_archive_period(db: CalendarDatabase) -> bool:
+    """Repair databases created before the archive tail was treated as partial."""
+    period = ARCHIVE_LAST_DATE.strftime("%Y-%m")
+    row = db.connection.execute(
+        "SELECT status, source_type, event_count FROM periods WHERE period=?", (period,)
+    ).fetchone()
+    if not row or row["source_type"] != "huggingface_archive" or row["status"] != "complete":
+        return False
+    db.mark_period(
+        period,
+        "incomplete",
+        row["event_count"],
+        error=f"archive ends on {ARCHIVE_LAST_DATE.isoformat()}",
+        source_type="huggingface_archive",
+    )
+    return True
 
 
 class CalendarBrowser:
@@ -143,11 +178,181 @@ class CalendarBrowser:
             self.driver = None
 
 
+def _chrome_binary() -> str:
+    """Return an ordinary Chrome/Chromium executable without starting WebDriver."""
+    configured = os.environ.get("FF_CHROME_BINARY")
+    candidates = [
+        configured,
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    raise SourceError(
+        "Google Chrome was not found; set FF_CHROME_BINARY to the Chrome executable"
+    )
+
+
+def _free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _wait_for_debugger(port: int, process, timeout: int = HANDOFF_START_TIMEOUT_SECONDS) -> None:
+    """Wait for the manually controlled Chrome DevTools endpoint on loopback."""
+    deadline = time.monotonic() + timeout
+    endpoint = f"http://127.0.0.1:{port}/json/version"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SourceError("ordinary Chrome exited before the handoff was ready")
+        try:
+            with urllib.request.urlopen(endpoint, timeout=1) as response:
+                if response.status == 200:
+                    return
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(0.2)
+    raise SourceError("ordinary Chrome did not expose the local handoff endpoint in time")
+
+
+class ChromeHandoffBrowser:
+    """Let a human establish an ordinary Chrome session, then attach to it.
+
+    Chrome is launched directly, not by Selenium.  The user first sees and, when
+    necessary, legitimately completes the upstream verification.  WebDriver is
+    attached only after the user confirms that real calendar rows are visible.
+    No challenge is solved, clicked, hidden, or bypassed by this class.
+    """
+
+    def __init__(self, input_fn=input, output=print, sleep=time.sleep,
+                 process_factory=subprocess.Popen, driver_factory=None,
+                 options_factory=None, debugger_wait=_wait_for_debugger,
+                 port_factory=_free_loopback_port, chrome_binary: str | None = None) -> None:
+        self.input_fn = input_fn
+        self.output = output
+        self.sleep = sleep
+        self.process_factory = process_factory
+        self.driver_factory = driver_factory
+        self.options_factory = options_factory
+        self.debugger_wait = debugger_wait
+        self.port_factory = port_factory
+        self.chrome_binary = chrome_binary
+        self.process = None
+        self.driver = None
+        self.port = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+    def _launch_and_attach(self, url: str) -> None:
+        HANDOFF_PROFILE.mkdir(parents=True, exist_ok=True)
+        self.port = self.port_factory()
+        binary = self.chrome_binary or _chrome_binary()
+        command = [
+            binary,
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={self.port}",
+            f"--user-data-dir={HANDOFF_PROFILE.resolve()}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+        ]
+        self.process = self.process_factory(command)
+        self.debugger_wait(self.port, self.process)
+        self.output(
+            "ORDINARY CHROME HANDOFF: Chrome opened the requested Forex Factory "
+            "month. Wait until actual calendar rows are visible. Complete any "
+            "verification manually; this program does not solve or bypass it."
+        )
+        self.input_fn("Return here and press Enter only after calendar rows are visible: ")
+
+        if self.options_factory is None:
+            from selenium.webdriver.chrome.options import Options
+            options = Options()
+        else:
+            options = self.options_factory()
+        options.add_experimental_option(
+            "debuggerAddress", f"127.0.0.1:{self.port}"
+        )
+        if self.driver_factory is None:
+            from selenium import webdriver
+            self.driver = webdriver.Chrome(options=options)
+        else:
+            self.driver = self.driver_factory(options)
+
+    @staticmethod
+    def _not_ready(exc: SourceError) -> bool:
+        return isinstance(exc, VerificationPageError) or str(exc) in {
+            "page contains no recognizable calendar rows",
+            "calendar rows contained no events",
+        }
+
+    def _confirm_visible_rows(self, url: str, period: str) -> tuple[str, list[dict]]:
+        while True:
+            text = self.driver.page_source
+            try:
+                return text, parse_html(text, url, period)
+            except SourceError as exc:
+                if not self._not_ready(exc):
+                    raise
+                self.output(
+                    f"The {period} calendar rows are not readable yet. Finish any "
+                    "verification or wait for the calendar to load in Chrome."
+                )
+                self.input_fn("Press Enter after the calendar rows are visible: ")
+
+    def retrieve(self, month: date) -> tuple[str, list[dict]]:
+        period = month.strftime("%Y-%m")
+        url = CALENDAR_URL.format(month=month.strftime("%b.%Y").lower())
+        if self.driver is None:
+            self._launch_and_attach(url)
+            return self._confirm_visible_rows(url, period)
+
+        # Keep one ordinary browser/profile/cookie session and move slowly between
+        # months.  If the upstream presents another challenge, control returns to
+        # the human instead of attempting automated challenge interaction.
+        self.sleep(float(os.environ.get("FF_HANDOFF_DELAY_SECONDS", "5")))
+        self.driver.get(url)
+        self.sleep(float(os.environ.get("FF_PAGE_WAIT_SECONDS", "3")))
+        try:
+            text = self.driver.page_source
+            return text, parse_html(text, url, period)
+        except SourceError as exc:
+            if not self._not_ready(exc):
+                raise
+            self.output(
+                f"The {period} page needs your attention. Complete any verification "
+                "or wait for the calendar rows to finish loading in Chrome; automatic "
+                "backfill will resume afterward."
+            )
+            self.input_fn("Press Enter after the calendar rows are visible: ")
+            return self._confirm_visible_rows(url, period)
+
+    def close(self) -> None:
+        if self.driver is not None:
+            self.driver.quit()
+            self.driver = None
+        elif self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+        self.process = None
+
+
 def backfill(db: CalendarDatabase, start: date, end: date, html_directory: Path | None = None,
-             interactive_browser: bool = False, browser: CalendarBrowser | None = None) -> int:
+             interactive_browser: bool = False, browser_handoff: bool = False,
+             browser: CalendarBrowser | ChromeHandoffBrowser | None = None) -> int:
     total=0
     owned_browser = browser is None
-    browser = browser or CalendarBrowser(interactive_browser)
+    browser = browser or (
+        ChromeHandoffBrowser() if browser_handoff else CalendarBrowser(interactive_browser)
+    )
     try:
         for month in month_range(start, end):
             period=month.strftime("%Y-%m")
@@ -214,12 +419,16 @@ def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = 
 
 
 def sync(db: CalendarDatabase, archive_file: str | None = None,
-         interactive_browser: bool = False) -> dict:
+         interactive_browser: bool = False, browser_handoff: bool = False) -> dict:
     bootstrap(db,archive_file)
+    repair_existing_partial_archive_period(db)
     next_month=(date.today().replace(day=28)+timedelta(days=4)).replace(day=1)
     # One browser (and therefore one cookie session) is shared by gaps and the
     # revision window. Bootstrap remains idempotent and reuses existing rows.
-    with CalendarBrowser(interactive_browser) as browser:
+    browser_context = (
+        ChromeHandoffBrowser() if browser_handoff else CalendarBrowser(interactive_browser)
+    )
+    with browser_context as browser:
         # Explicitly detect gaps after the archive. Failed periods are absent/incomplete and retried.
         covered={r[0] for r in db.connection.execute("SELECT period FROM periods WHERE status='complete'")}
         for month in month_range(date(2025,4,1),next_month):
