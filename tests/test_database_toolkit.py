@@ -290,7 +290,7 @@ def test_archive_import_idempotency_and_revision(tmp_path):
     db.upsert(rows); assert len(db.rows())==1
     revised=canonical(raw(day="2024-01-01",clock="8:30am",event="Jobs",actual="9",source_event_id="42"),"test")
     db.upsert([revised]); revised["actual"]="10"; revised["time"]="9:00am"; db.upsert([revised])
-    assert len(db.rows())==2 and next(r for r in db.rows() if r["source_event_id"]=="42")["actual"]=="10"
+    assert len(db.rows())==1 and db.rows()[0]["source_event_id"]=="42" and db.rows()[0]["actual"]=="10"
 
 
 PRODUCTION_ARCHIVE_CSV = b"""DateTime,Currency,Impact,Event,Actual,Forecast,Previous,Detail

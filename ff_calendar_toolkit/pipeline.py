@@ -267,6 +267,9 @@ def monthly_completeness_audit(db: CalendarDatabase, candidate_browser_month: st
 
 def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = True) -> tuple[dict, list[str]]:
     rows=db.rows(); errors=[]
+    identity_collisions = db.identity_collisions()
+    mixed_collision_count = len(identity_collisions["candidates"])
+    ambiguous_collision_count = len(identity_collisions["ambiguous"])
     duplicates=db.connection.execute("SELECT COUNT(*) FROM (SELECT event_key FROM events GROUP BY event_key HAVING COUNT(*)>1)").fetchone()[0]
     missing_required=sum(any(r.get(field) in {None,""} for field in ESSENTIAL) for r in rows)
     malformed=0
@@ -287,6 +290,8 @@ def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = 
     errors += [f"{n} {label}" for n,label in checks if n]
     if strict and missing: errors.append(f"{len(missing)} missing historical months")
     if strict and suspicious_sparse: errors.append(f"{len(suspicious_sparse)} suspiciously sparse or filtered completed browser months")
+    if strict and (mixed_collision_count or ambiguous_collision_count):
+        errors.append(f"{mixed_collision_count + ambiguous_collision_count} unresolved derived/stable natural-identity collisions")
     sync_state=DATA/"sync_state.json"
     exports=DATA/"exports"; hashes={}
     import hashlib
@@ -315,6 +320,13 @@ def validate(db: CalendarDatabase, strict: bool = False, write_manifest: bool = 
       "count_by_month_and_currency":{m:dict(sorted(c.items())) for m,c in sorted(by_month_currency.items())},
       "source_count_by_month":{m:dict(sorted(c.items())) for m,c in sorted(source_by_month.items())},
       "suspiciously_sparse_completed_months":suspicious_sparse,
+      "mixed_derived_stable_identity_collisions": mixed_collision_count,
+      "ambiguous_identity_collision_groups": ambiguous_collision_count,
+      "identity_collision_examples": [
+          {"identity": list(group["identity"]),
+           "event_keys": [row["event_key"] for row in group["derived"] + group["stable"]]}
+          for group in (identity_collisions["candidates"] + identity_collisions["ambiguous"])[:10]
+      ],
       **audit,
       "missing_months":missing,"incomplete_months":incomplete,"duplicate_count":duplicates,"rows_missing_essential_fields":missing_required,
       "malformed_dates":malformed,"last_successful_synchronization":json.loads(sync_state.read_text()).get("completed_at") if sync_state.exists() else None,

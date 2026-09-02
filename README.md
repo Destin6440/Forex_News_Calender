@@ -164,6 +164,25 @@ Strict validation exits nonzero for duplicate keys, historical month gaps, inval
 python -m ff_calendar_toolkit.cli validate --strict
 ```
 
+It also detects legacy derived-key rows that collide with stable-ID rows under
+the enhanced natural identity (date, normalized clock or clockless period
+label, currency, and normalized event name). Inspect and safely repair these
+without fetching any source data:
+
+```bash
+# Dry-run (the default): prints candidates, ambiguity, counts, and examples.
+python -m ff_calendar_toolkit.cli repair-identities
+
+# Back up SQLite, then repair only unambiguous derived/stable pairs atomically.
+python -m ff_calendar_toolkit.cli repair-identities --apply
+```
+
+Apply-mode backups are written beneath `data/backups/`. Groups are ambiguous
+only when they contain multiple distinct nonempty source event IDs; they are
+reported and left untouched. Multiple derived observations can safely merge
+into the sole stable ID, and rerunning after a successful repair produces no
+further changes.
+
 ## Configuration search
 
 ```bash

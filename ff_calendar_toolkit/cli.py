@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_VIEWER_HOST, DEFAULT_VIEWER_PORT = "127.0.0.1", 8501
 
-DATA_COMMANDS = {"bootstrap", "backfill", "update", "sync", "validate", "export", "export-yearly-excel", "import-html", "find-configuration"}
+DATA_COMMANDS = {"bootstrap", "backfill", "update", "sync", "validate", "repair-identities", "export", "export-yearly-excel", "import-html", "find-configuration"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--yearly-excel-dir", type=Path, help="Generate reconciled yearly Excel workbooks after strict validation")
     validate = subparsers.add_parser("validate", help="Validate canonical database")
     validate.add_argument("--strict", action="store_true")
+    repair = subparsers.add_parser("repair-identities", help="Safely reconcile legacy derived keys with stable IDs")
+    repair.add_argument("--apply", action="store_true", help="Create a backup and apply unambiguous repairs")
     export = subparsers.add_parser("export", help="Create deterministic complete exports")
     export.add_argument("--format", nargs="+", choices=["csv", "parquet"], required=True)
     yearly = subparsers.add_parser("export-yearly-excel", help="Strictly validate and atomically create yearly Excel workbooks")
@@ -214,6 +216,8 @@ def run_data_command(args) -> int:
         elif args.command=="sync": print(json.dumps(sync(db,args.archive_file,args.interactive_browser,args.browser_handoff,args.force_refresh_start,args.yearly_excel_dir),indent=2))
         elif args.command=="validate":
             manifest,errors=validate(db,args.strict); print(json.dumps(manifest,indent=2)); return 1 if errors else 0
+        elif args.command=="repair-identities":
+            print(json.dumps(db.repair_identities(apply=args.apply), indent=2))
         elif args.command=="export": print(json.dumps(db.export(args.format),indent=2))
         elif args.command=="export-yearly-excel":
             manifest,errors=validate(db,strict=True)

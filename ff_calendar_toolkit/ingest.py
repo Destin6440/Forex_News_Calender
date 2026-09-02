@@ -111,6 +111,33 @@ def non_clock_period_identity_label(value: str) -> str | None:
     return normalized_name(stripped)
 
 
+def enhanced_natural_identity(row: dict) -> tuple[str, str, str, str, str]:
+    """Return the conservative identity used to reconcile legacy rows.
+
+    Clockless period labels are deliberately part of this identity.  Generic
+    all-day/tentative records retain an empty period component, matching the
+    identity semantics of their established ``ALL_DAY`` derived keys.
+    """
+    clock = str(row.get("time_et") or "").strip()
+    if clock:
+        try:
+            clock = datetime.strptime(clock, "%H:%M").strftime("%H:%M")
+        except ValueError:
+            # This helper also accepts raw importer-shaped records.
+            parsed, _ = _time(clock)
+            clock = parsed.strftime("%H:%M") if parsed else ""
+    period = "" if clock else (non_clock_period_identity_label(
+        str(row.get("raw_time") or "")
+    ) or "")
+    return (
+        str(row.get("date_et") or ""), clock, period,
+        str(row.get("currency") or "").strip().upper(),
+        str(row.get("event_name_normalized") or normalized_name(
+            str(row.get("event_name") or row.get("event") or "")
+        )),
+    )
+
+
 def impact(value: str) -> tuple[str, str]:
     raw = (value or "").strip().lower()
     aliases = {"high": "red", "medium": "orange", "med": "orange", "low": "yellow",
