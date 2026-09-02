@@ -165,9 +165,11 @@ class _CalendarHTML(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs=dict(attrs); cls=attrs.get("class", "")
         if tag=="tr" and ("calendar__row" in cls or "calendar_row" in cls):
-            self.row={"attrs":attrs,"cells":{},"recognized_cells":[]}
+            self.row={"attrs":attrs,"cells":{},"recognized_cells":[],"placeholder":False}
         elif self.row is not None and tag=="td":
             classes=set(cls.split())
+            if "calendar__cell--blank" in classes:
+                self.row["placeholder"] = True
             self.cell=next(
                 (kind for kind in self.CELL_KINDS if kind in classes or f"calendar__{kind}" in classes),
                 None,
@@ -231,6 +233,7 @@ def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> 
         parsed_date = current_date
         if period and not re.search(r"\d{4}", parsed_date): parsed_date += " " + period[:4]
         raw={**cells, "date":parsed_date, "time":current_time or "all day", "impact":imp,
+             "event_id":item["attrs"].get("data-event-id", ""),
              "url":urljoin(source_url, item.get("url", ""))}
         result.append(canonical(raw, "saved_html" if source_url.startswith("file:") else "calendar_html", period))
     if not result:
@@ -238,3 +241,22 @@ def parse_html(content: str | bytes, source_url: str = "", period: str = "") -> 
             raise VerificationPageError(VERIFICATION_PAGE_ERROR)
         raise SourceError("calendar rows contained no events")
     return result
+
+
+def calendar_row_counts(content: str | bytes) -> tuple[int, int, int]:
+    """Return (all rows, materialized event rows, virtual blank rows).
+
+    This intentionally uses the same conservative row/cell recognition as
+    :func:`parse_html`.  Blank virtualization slots are diagnostics, never
+    candidate events, while partially populated event rows still reach
+    ``parse_html`` and fail closed.
+    """
+    text = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
+    parser = _CalendarHTML()
+    parser.feed(text)
+    placeholders = sum(bool(row["placeholder"]) for row in parser.rows)
+    materialized = sum(
+        bool(row["attrs"].get("data-event-id") or row["cells"].get("event") or row["cells"].get("currency"))
+        for row in parser.rows
+    )
+    return len(parser.rows), materialized, placeholders

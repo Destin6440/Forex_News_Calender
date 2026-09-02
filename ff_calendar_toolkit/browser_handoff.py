@@ -15,12 +15,46 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .ingest import SourceError, VerificationPageError, parse_html
+from .ingest import SourceError, VerificationPageError, calendar_row_counts, parse_html
 
 CALENDAR_URL = "https://www.forexfactory.com/calendar?month={month}"
 LANDING_URL = "https://www.forexfactory.com/calendar"
 HANDOFF_PROFILE = Path("data/chrome-handoff-profile")
 LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+SCROLL_METRICS_SCRIPT = r"""
+const calendars = [...document.querySelectorAll('.calendar, table.calendar__table, .calendar__table')];
+let node = calendars[0] || document.scrollingElement || document.documentElement;
+for (let candidate = node; candidate; candidate = candidate.parentElement) {
+  if (candidate.scrollHeight > candidate.clientHeight + 1 &&
+      ['auto', 'scroll'].includes(getComputedStyle(candidate).overflowY)) {
+    node = candidate; break;
+  }
+}
+if (!(node.scrollHeight > node.clientHeight + 1)) {
+  node = document.scrollingElement || document.documentElement;
+}
+return {top: node.scrollTop || window.scrollY || 0,
+        height: node.scrollHeight || document.documentElement.scrollHeight,
+        client: node.clientHeight || window.innerHeight,
+        document: node === document.scrollingElement || node === document.documentElement};
+"""
+
+SCROLL_TO_SCRIPT = r"""
+const target = arguments[0];
+const calendars = [...document.querySelectorAll('.calendar, table.calendar__table, .calendar__table')];
+let node = calendars[0] || document.scrollingElement || document.documentElement;
+for (let candidate = node; candidate; candidate = candidate.parentElement) {
+  if (candidate.scrollHeight > candidate.clientHeight + 1 &&
+      ['auto', 'scroll'].includes(getComputedStyle(candidate).overflowY)) {
+    node = candidate; break;
+  }
+}
+if (!(node.scrollHeight > node.clientHeight + 1)) node = document.scrollingElement || document.documentElement;
+if (node === document.scrollingElement || node === document.documentElement) window.scrollTo(0, target);
+else node.scrollTop = target;
+return true;
+"""
 
 
 class ChromeHandoff:
@@ -191,25 +225,16 @@ class ChromeHandoff:
         url = CALENDAR_URL.format(month=month.strftime("%b.%Y").lower())
         self.driver.get(url)
         self.sleep(float(os.environ.get("FF_PAGE_WAIT_SECONDS", "3")))
-        render_wait = float(os.environ.get("FF_HANDOFF_RENDER_SECONDS", "10"))
+        max_duration = float(os.environ.get("FF_HANDOFF_SWEEP_SECONDS", "60"))
+        interval = float(os.environ.get("FF_HANDOFF_SCROLL_INTERVAL_SECONDS", "0.25"))
+        overlap = float(os.environ.get("FF_HANDOFF_SCROLL_OVERLAP", "0.35"))
+        if max_duration <= 0 or interval < 0 or not 0 < overlap < 1:
+            raise SourceError("invalid browser sweep settings: duration must be positive, interval nonnegative, and overlap between 0 and 1")
         while True:
-            deadline = self.monotonic() + render_wait
-            while True:
-                html = self.driver.page_source
-                try:
-                    return html, parse_html(html, url, period)
-                except VerificationPageError:
-                    break
-                except SourceError as exc:
-                    # Only transient empty/not-yet-rendered documents are polled.
-                    # Recognized malformed event rows fail immediately.
-                    transient = str(exc) in {
-                        "page contains no recognizable calendar rows",
-                        "calendar rows contained no events",
-                    }
-                    if not transient or self.monotonic() >= deadline:
-                        raise
-                    self.sleep(0.25)
+            try:
+                return self._sweep_month(url, period, max_duration, interval, overlap)
+            except VerificationPageError:
+                pass
             self._wait_for_user(
                 f"Access paused while retrieving {period}. Leave this same Chrome window open, "
                 "establish access manually, wait until event rows are visible, then press Enter "
@@ -217,6 +242,103 @@ class ChromeHandoff:
             )
             # Do not navigate away or create another session. The user has
             # cleared access in this tab; poll that same month again.
+
+    def _scroll_metrics(self) -> dict[str, float]:
+        execute = getattr(self.driver, "execute_script", None)
+        if execute is None:  # Small third-party/fake drivers and static pages.
+            return {"top": 0.0, "height": 0.0, "client": 0.0}
+        raw = execute(SCROLL_METRICS_SCRIPT) or {}
+        return {name: float(raw.get(name, 0) or 0) for name in ("top", "height", "client")}
+
+    def _scroll_to(self, position: float) -> None:
+        execute = getattr(self.driver, "execute_script", None)
+        if execute is not None:
+            execute(SCROLL_TO_SCRIPT, max(0, position))
+
+    @staticmethod
+    def _event_identity(event: dict) -> tuple:
+        return (event["date_et"], event.get("time_et"), event["currency"], event["event_name_normalized"])
+
+    def _sweep_month(self, url: str, period: str, max_duration: float,
+                     interval: float, overlap: float) -> tuple[str, list[dict]]:
+        deadline = self.monotonic() + max_duration
+        self._scroll_to(0)
+        accumulated: dict[str, dict] = {}
+        identities: dict[tuple, str] = {}
+        progress: list[int] = []
+        grew_after_initial = False
+        bottom_stable_passes = 0
+        last_html = ""
+        materialized = placeholders = 0
+        final_position = 0.0
+        wait_for_render = False
+
+        while self.monotonic() < deadline:
+            if wait_for_render:
+                self.sleep(interval)
+            wait_for_render = True
+            last_html = self.driver.page_source
+            try:
+                snapshot = parse_html(last_html, url, period)
+            except VerificationPageError:
+                raise
+            except SourceError as exc:
+                # Rendering may initially expose only structural/blank rows;
+                # populated malformed rows are never retried.
+                if str(exc) not in {"page contains no recognizable calendar rows", "calendar rows contained no events"}:
+                    raise
+                snapshot = []
+            _rows, materialized, placeholders = calendar_row_counts(last_html)
+            before = len(accumulated)
+            for event in snapshot:
+                identity = self._event_identity(event)
+                old_key = identities.get(identity)
+                key = event["event_key"]
+                if old_key and old_key != key:
+                    # The stable Forex Factory id wins if another viewport had
+                    # enough context only to derive the same event identity.
+                    if event.get("source_event_id"):
+                        accumulated.pop(old_key, None)
+                        accumulated[key] = event
+                        identities[identity] = key
+                    continue
+                accumulated[key] = event
+                identities[identity] = key
+            if len(accumulated) > before:
+                if progress:
+                    grew_after_initial = True
+                progress.append(len(accumulated))
+                self.output(f"{period} virtualized sweep: {' → '.join(map(str, progress))} events")
+
+            metrics = self._scroll_metrics()
+            top, height, client = metrics["top"], metrics["height"], metrics["client"]
+            final_position = top
+            bottom = max(0.0, height - client)
+            if height <= client + 1:  # Ordinary non-virtualized document.
+                if accumulated:
+                    return last_html, list(accumulated.values())
+                continue
+            at_bottom = top >= bottom - 1
+            if at_bottom:
+                # Always request bottom once more: materialization can increase
+                # scrollHeight, and only unchanged bottom passes are stable.
+                if len(accumulated) == before:
+                    bottom_stable_passes += 1
+                else:
+                    bottom_stable_passes = 0
+                self._scroll_to(bottom)
+                if bottom_stable_passes >= 2 and (not placeholders or grew_after_initial):
+                    return last_html, list(accumulated.values())
+            else:
+                bottom_stable_passes = 0
+                step = max(1.0, client * (1.0 - overlap))
+                self._scroll_to(min(bottom, top + step))
+
+        raise SourceError(
+            f"{period} virtualized calendar sweep timed out after {max_duration:g}s: "
+            f"accumulated events={len(accumulated)}, materialized rows={materialized}, "
+            f"placeholder rows={placeholders}, final scroll position={final_position:g}"
+        )
 
     def _terminate_owned_process(self) -> None:
         if not self.launched_by_us or self.process is None or self.process.poll() is not None:

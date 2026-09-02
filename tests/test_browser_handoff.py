@@ -5,7 +5,7 @@ import pytest
 
 from ff_calendar_toolkit.browser_handoff import ChromeHandoff
 from ff_calendar_toolkit.cli import build_parser
-from ff_calendar_toolkit.ingest import SourceError
+from ff_calendar_toolkit.ingest import SourceError, calendar_row_counts, parse_html
 from ff_calendar_toolkit.ingest import canonical
 from ff_calendar_toolkit.database import CalendarDatabase
 from ff_calendar_toolkit.pipeline import backfill
@@ -41,6 +41,146 @@ class Driver:
     @property
     def page_source(self): return self.current
     def quit(self): self.quit_count += 1
+
+
+def virtual_page(batches, active):
+    """Build a production-shaped table, retaining blank virtualization slots."""
+    rows = ['<table class="calendar__table">']
+    for batch_number, events in enumerate(batches):
+        rows.append('<tr class="calendar__row calendar__row--day-breaker">'
+                    f'<td class="calendar__date">Tue Apr {8 + batch_number} 2025</td></tr>')
+        if batch_number not in active:
+            rows.extend('<tr class="calendar__row"><td class="calendar__cell--blank"></td></tr>'
+                        for _event in events)
+            continue
+        for event_id, name, clock in events:
+            rows.append(f'''<tr class="calendar__row" data-event-id="{event_id}">
+                <td class="calendar__time">{clock}</td><td class="calendar__currency">USD</td>
+                <td class="calendar__impact icon--ff-impact-red"></td>
+                <td class="calendar__event"><a href="/calendar/{event_id}">{name}</a></td>
+                <td class="calendar__actual">1</td><td class="calendar__forecast">2</td>
+                <td class="calendar__previous">3</td></tr>''')
+    return "".join(rows) + "</table>"
+
+
+class VirtualDriver:
+    def __init__(self, pages, *, challenge_at=None):
+        self.pages = pages
+        self.position = 0
+        self.urls = []
+        self.contexts = 1
+        self.challenge_at = challenge_at
+        self.challenge_cleared = False
+        self.challenge_seen = False
+
+    def get(self, url):
+        self.urls.append(url)
+
+    def execute_script(self, script, *args):
+        if args:
+            self.position = int(args[0])
+            return True
+        return {"top": self.position, "height": 1000, "client": 400}
+
+    @property
+    def page_source(self):
+        if (self.challenge_at is not None and self.position >= self.challenge_at
+                and not self.challenge_cleared and not self.challenge_seen):
+            self.challenge_seen = True
+            return CHALLENGE
+        index = 0 if self.position < 250 else (1 if self.position < 500 else 2)
+        return self.pages[index]
+
+
+class StepClock:
+    def __init__(self, step=0.01): self.now = -step; self.step = step
+    def __call__(self): self.now += self.step; return self.now
+
+
+def attached_browser(tmp_path, driver, **kwargs):
+    browser = ChromeHandoff(tmp_path / "profile", input_fn=kwargs.pop("input_fn", lambda: None),
+        output=kwargs.pop("output", lambda _message: None), ps=lambda: "",
+        popen=lambda *_args, **_kwargs: Process(), urlopen=lambda *_args, **_kwargs: Response(),
+        driver_factory=lambda _options: driver, options_factory=Options,
+        sleep=lambda _seconds: None, monotonic=kwargs.pop("monotonic", StepClock()),
+        chrome_path="/fake/Chrome", **kwargs)
+    return browser
+
+
+def test_virtualized_sweep_unions_overlapping_snapshots_and_preserves_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    batches = [
+        [("101", "First", "8:30am"), ("102", "Simultaneous", "")],
+        [("103", "Middle", "Day 2"), ("104", "Overlap Boundary", "9:00am")],
+        [("105", "Last", "10:00am")],
+    ]
+    pages = [virtual_page(batches, active) for active in ({0}, {0, 1}, {1, 2})]
+    driver = VirtualDriver(pages)
+    messages = []
+    browser = attached_browser(tmp_path, driver, output=messages.append)
+    _html, events = browser.retrieve(date(2025, 4, 1))
+
+    assert [event["source_event_id"] for event in events] == ["101", "102", "103", "104", "105"]
+    simultaneous = next(event for event in events if event["source_event_id"] == "102")
+    assert simultaneous["date_et"] == "2025-04-08" and simultaneous["time_et"] == "08:30"
+    day_two = next(event for event in events if event["source_event_id"] == "103")
+    assert day_two["date_et"] == "2025-04-09" and day_two["all_day"] is True
+    assert driver.urls == ["https://www.forexfactory.com/calendar?month=apr.2025"]
+    assert driver.contexts == 1
+    assert any("2 → 4 → 5 events" in message for message in messages)
+    browser.close()
+
+
+def test_challenge_during_sweep_pauses_and_restarts_same_month(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    batches = [[("201", "First", "8:30am")], [("202", "Second", "9:00am")], [("203", "Last", "10:00am")]]
+    pages = [virtual_page(batches, active) for active in ({0}, {1}, {2})]
+    driver = VirtualDriver(pages, challenge_at=260)
+    presses = []
+    def enter():
+        presses.append(True)
+        if len(presses) == 2:
+            driver.challenge_cleared = True
+    browser = attached_browser(tmp_path, driver, input_fn=enter)
+    _html, events = browser.retrieve(date(2025, 4, 1))
+    assert {event["source_event_id"] for event in events} == {"201", "202", "203"}
+    assert len(driver.urls) == 1 and len(presses) == 2 and driver.contexts == 1
+    browser.close()
+
+
+def test_unchanging_partial_virtualized_page_times_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "0.08")
+    batches = [[("301", "Only Visible Event", "8:30am")], [("302", "Hidden", "9:00am")]]
+    page = virtual_page(batches, {0})
+    driver = VirtualDriver([page, page, page])
+    browser = attached_browser(tmp_path, driver)
+    with pytest.raises(SourceError, match=r"accumulated events=1.*materialized rows=1.*placeholder rows=1.*final scroll position=600"):
+        browser.retrieve(date(2025, 4, 1))
+    browser.close()
+
+
+def test_production_snapshot_has_45_events_and_376_non_event_placeholders():
+    fixture = Path("tests/fixtures/forex_factory_2025-04-rows.html").read_text()
+    assert calendar_row_counts(fixture) == (452, 45, 376)
+    events = parse_html(fixture, "https://www.forexfactory.com/calendar?month=apr.2025", "2025-04")
+    assert len(events) == 45
+    assert all(event["source_event_id"] for event in events)
+    assert {color: sum(event["impact_color"] == color for event in events)
+            for color in ("orange", "red", "yellow")} == {"orange": 6, "red": 4, "yellow": 35}
+
+
+def test_production_initial_snapshot_is_not_accepted_as_complete(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "0.08")
+    fixture = Path("tests/fixtures/forex_factory_2025-04-rows.html").read_text()
+    driver = VirtualDriver([fixture, fixture, fixture])
+    browser = attached_browser(tmp_path, driver)
+    with pytest.raises(SourceError, match="accumulated events=45"):
+        browser.retrieve(date(2025, 4, 1))
+    browser.close()
 
 
 def test_cli_exposes_browser_handoff():
@@ -186,7 +326,7 @@ def test_post_enter_empty_page_is_polled_until_rows_render(tmp_path, monkeypatch
             self.reads += 1
             return "<html></html>" if self.reads == 1 else CALENDAR
     driver = RenderingDriver([CALENDAR])
-    clock = iter((0.0, 0.1))
+    clock = iter((0.0, 0.1, 0.2))
     browser = ChromeHandoff(tmp_path / "profile", input_fn=lambda: None, ps=lambda: "",
         popen=lambda *_args, **_kwargs: Process(), urlopen=lambda *_args, **_kwargs: Response(),
         driver_factory=lambda _options: driver, options_factory=Options,

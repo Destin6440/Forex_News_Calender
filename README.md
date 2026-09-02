@@ -76,6 +76,13 @@ python -m ff_calendar_toolkit.cli sync --browser-handoff
 4. If access is challenged later, navigation pauses on that month. Establish
    access manually in the same window and press Enter to retry it.
 
+For each month, handoff sweeps overlapping positions from the top to the bottom
+of the document or calendar scroll container and unions the event rows that the
+virtualized calendar materializes. It waits for a stable final bottom pass before
+the normal completeness audit runs. `FF_HANDOFF_SWEEP_SECONDS` (default `60`),
+`FF_HANDOFF_SCROLL_INTERVAL_SECONDS` (default `0.25`), and
+`FF_HANDOFF_SCROLL_OVERLAP` (default `0.35`) tune the bounded sweep when needed.
+
 No CAPTCHA or Cloudflare verification is solved, automated, evaded, or bypassed.
 The mode merely waits for the user to obtain legitimate access before attaching.
 It safely reuses an already-running dedicated handoff process, never kills normal
@@ -121,7 +128,6 @@ cd "$HOME/Forex_News_Calender" &&
 git switch main &&
 git pull --ff-only origin main &&
 source .venv/bin/activate &&
-python -m pip install -r requirements.txt &&
 caffeinate -dimsu python -m ff_calendar_toolkit.cli sync \
   --browser-handoff \
   --force-refresh-start 2025-04-01 \
