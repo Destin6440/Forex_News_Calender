@@ -50,6 +50,21 @@ def test_month_data_lookalikes_are_rejected(label):
         _time(label)
 
 
+@pytest.mark.parametrize("label", [
+    "Sep 27th", "September 27th", "Oct 4th", "Nov 1st", "FEB 29TH",
+])
+def test_month_ordinal_reference_dates_are_non_clock_times(label):
+    assert _time(label) == (None, True)
+
+
+@pytest.mark.parametrize("label", [
+    "Sep 27", "27th Sep", "Sep 32nd", "Feb 30th", "Sep 27th Extra", "Sep 21th",
+])
+def test_invalid_or_inexact_month_ordinal_reference_dates_are_rejected(label):
+    with pytest.raises(SourceError, match="malformed time"):
+        _time(label)
+
+
 @pytest.mark.parametrize("label", ["Daylight", "Someday 4", "Day Four", "Day 0", "Day -1"])
 def test_unrelated_day_labels_are_rejected(label):
     with pytest.raises(SourceError, match="malformed time"):
@@ -76,6 +91,41 @@ def test_month_data_labels_distinguish_derived_event_keys_without_source_ids():
 
     assert february["source_event_id"] is march["source_event_id"] is None
     assert february["event_key"] != march["event_key"]
+
+
+def test_reference_date_labels_are_clockless_and_distinguish_derived_keys():
+    september = canonical(raw(clock="Sep 27th", event="Unemployment Claims"),
+                          "calendar_html", "2025-11")
+    october = canonical(raw(clock="Oct 4th", event="Unemployment Claims"),
+                        "calendar_html", "2025-11")
+
+    assert september["event_key"] != october["event_key"]
+    assert september["raw_time"] == "Sep 27th"
+    assert september["all_day"] is True
+    assert september["time_et"] is september["datetime_et"] is september["datetime_utc"] is None
+
+
+def test_production_reference_date_html_rows_with_source_ids_all_survive():
+    rows = "".join(
+        f'''<tr class="calendar__row" data-event-id="{event_id}">
+        <td class="calendar__time">{clock}</td><td class="calendar__currency">USD</td>
+        <td class="calendar__impact icon--ff-impact-red"></td>
+        <td class="calendar__event">Unemployment Claims</td></tr>'''
+        for event_id, clock in (
+            ("81001", "Sep 27th"), ("81002", "Oct 4th"),
+            ("81003", "Oct 11th"), ("81004", "2:10am"),
+        )
+    )
+    html = ('''<table><tr class="calendar__row calendar__row--day-breaker">
+            <td class="calendar__date">Tue Nov 18 2025</td></tr>'''
+            + rows + "</table>")
+
+    events = parse_html(html, "https://www.forexfactory.com/calendar", "2025-11")
+
+    assert len(events) == 4
+    assert {event["source_event_id"] for event in events} == {"81001", "81002", "81003", "81004"}
+    assert all(event["time_et"] is None for event in events[:3])
+    assert events[3]["time_et"] == "02:10"
 
 
 @pytest.mark.parametrize("clock", ["All Day", "Tentative", "Day 1", "Day 4", ""])
