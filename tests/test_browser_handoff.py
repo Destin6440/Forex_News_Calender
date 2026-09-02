@@ -214,6 +214,32 @@ def test_virtualized_sweep_preserves_reference_dates_and_clock_release(tmp_path,
     browser.close()
 
 
+def test_virtualized_sweep_preserves_ordinal_range_without_neighboring_clock(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
+    monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
+    production_rows = [
+        ("92001", "Neighboring Release", "8:30am"),
+        ("92002", "German WPI m/m", "7th-14th"),
+        ("92003", "Later Release", "10:00am"),
+    ]
+    pages = [
+        same_day_virtual_page(production_rows, active, day="Wed Sep 2 2026", currency="EUR")
+        for active in ({0, 1}, {1, 2}, {2})
+    ]
+    browser = attached_browser(tmp_path, VirtualDriver(pages))
+
+    _html, events = browser.retrieve(date(2026, 9, 1))
+    wpi = next(event for event in events if event["source_event_id"] == "92002")
+
+    assert wpi["event_key"] == "ff:92002"
+    assert wpi["currency"] == "EUR"
+    assert wpi["event_name"] == "German WPI m/m"
+    assert wpi["raw_time"] == "7th-14th"
+    assert wpi["all_day"] is True
+    assert wpi["time_et"] is wpi["datetime_et"] is wpi["datetime_utc"] is None
+    browser.close()
+
+
 def test_virtualized_sweep_replaces_derived_duplicate_with_source_id(tmp_path, monkeypatch):
     monkeypatch.setenv("FF_PAGE_WAIT_SECONDS", "0")
     monkeypatch.setenv("FF_HANDOFF_SWEEP_SECONDS", "2")
