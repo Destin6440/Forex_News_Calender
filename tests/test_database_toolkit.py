@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,24 @@ def test_named_non_clock_labels_are_all_day(label):
     assert _time(label) == (None, True)
 
 
+@pytest.mark.parametrize("month", [
+    "Jan", "January", "Feb", "February", "Mar", "March", "Apr", "April", "May",
+    "Jun", "June", "Jul", "July", "Aug", "August", "Sep", "Sept", "September",
+    "Oct", "October", "Nov", "November", "Dec", "December",
+])
+def test_month_data_labels_are_non_clock_times_case_insensitively(month):
+    assert _time(f"{month} Data") == (None, True)
+    assert _time(f"{month.upper()} dAtA") == (None, True)
+
+
+@pytest.mark.parametrize("label", [
+    "Data Feb", "February Database", "Feb Data Extra", "Someday Data", "Month Data",
+])
+def test_month_data_lookalikes_are_rejected(label):
+    with pytest.raises(SourceError, match="malformed time"):
+        _time(label)
+
+
 @pytest.mark.parametrize("label", ["Daylight", "Someday 4", "Day Four", "Day 0", "Day -1"])
 def test_unrelated_day_labels_are_rejected(label):
     with pytest.raises(SourceError, match="malformed time"):
@@ -42,6 +61,45 @@ def test_day_four_canonical_event_has_no_clock_time_and_preserves_raw_value():
     assert event["all_day"] is True
     assert event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
     assert event["raw_time"] == "Day 4"
+
+
+def test_month_data_canonical_event_has_no_invented_clock_and_preserves_raw_value():
+    event = canonical(raw(clock="fEbRuArY dAtA"), "calendar_html", "2025-10")
+    assert event["all_day"] is True
+    assert event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+    assert event["raw_time"] == "fEbRuArY dAtA"
+
+
+def test_month_data_labels_distinguish_derived_event_keys_without_source_ids():
+    february = canonical(raw(clock="Feb Data", event="PPI Input m/m"), "calendar_html", "2025-10")
+    march = canonical(raw(clock="Mar Data", event="PPI Input m/m"), "calendar_html", "2025-10")
+
+    assert february["source_event_id"] is march["source_event_id"] is None
+    assert february["event_key"] != march["event_key"]
+
+
+@pytest.mark.parametrize("clock", ["All Day", "Tentative", "Day 1", "Day 4", ""])
+def test_existing_non_clock_labels_preserve_legacy_derived_keys(clock):
+    event = canonical(raw(clock=clock), "calendar_html", "2025-10")
+    legacy_identity = "|".join(("2024-03-10", "ALL_DAY", "USD", "employment change"))
+
+    assert event["event_key"] == "derived:" + hashlib.sha256(legacy_identity.encode()).hexdigest()
+
+
+def test_repeated_archive_all_day_import_remains_idempotent(tmp_path):
+    content = (b"date,time,currency,impact,event\n"
+               b"2024-03-10,All Day,USD,red,Employment Change\n")
+    database = CalendarDatabase(tmp_path / "calendar.sqlite")
+
+    database.upsert(parse_archive(content))
+    database.upsert(parse_archive(content))
+
+    assert len(database.rows()) == 1
+    legacy_identity = "|".join(("2024-03-10", "ALL_DAY", "USD", "employment change"))
+    assert database.rows()[0]["event_key"] == (
+        "derived:" + hashlib.sha256(legacy_identity.encode()).hexdigest()
+    )
+    database.close()
 
 
 def test_day_four_html_event_is_canonical_all_day_event():
@@ -143,6 +201,26 @@ def test_html_time_propagation_simultaneous_and_all_day():
     rows=parse_html(HTML,"https://www.forexfactory.com/calendar","2023-08")
     assert rows[0]["time_et"]==rows[1]["time_et"]=="08:15"
     assert rows[2]["all_day"] and rows[2]["time_et"] is None
+
+
+def test_html_month_data_does_not_inherit_preceding_event_clock():
+    html = '''<table>
+    <tr class="calendar__row"><td class="calendar__date">Wed Oct 22</td>
+      <td class="calendar__time">4:30am</td><td class="calendar__currency">GBP</td>
+      <td class="calendar__impact icon--ff-impact-red"></td>
+      <td class="calendar__event">Timed Release</td></tr>
+    <tr class="calendar__row"><td class="calendar__time">Feb Data</td>
+      <td class="calendar__currency">GBP</td><td class="calendar__impact icon--ff-impact-yellow"></td>
+      <td class="calendar__event">PPI Input m/m</td></tr>
+    <tr class="calendar__row"><td class="calendar__currency">GBP</td>
+      <td class="calendar__impact icon--ff-impact-yellow"></td>
+      <td class="calendar__event">PPI Output m/m</td></tr></table>'''
+    rows = parse_html(html, "https://www.forexfactory.com/calendar", "2025-10")
+    assert rows[0]["time_et"] == "04:30"
+    for event in rows[1:]:
+        assert event["all_day"] is True
+        assert event["time_et"] is event["datetime_et"] is event["datetime_utc"] is None
+        assert event["raw_time"] == "Feb Data"
 
 
 def test_verification_and_empty_pages_rejected():
