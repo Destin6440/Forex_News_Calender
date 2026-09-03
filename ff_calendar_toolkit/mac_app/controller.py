@@ -28,8 +28,13 @@ class DictListModel(QAbstractListModel):
 
 class AppController(QObject):
     stateChanged=Signal(); notification=Signal(str); error=Signal(str); searchFinished=Signal(); requestChooseDatabase=Signal()
+    _searchCompleted=Signal(int,object,object)
     def __init__(self,repo_root=None,parent=None):
         super().__init__(parent);self.repo_root=Path(repo_root or Path.cwd());self.settings=QSettings();self.reader=None;self.facets={};self.definition=SearchDefinition();self.results=[];self.selected=None;self.loading=False;self.progress=0;self.last_export="";self._results_current=False;self._generation=0;self._cancel=Event();self.pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix="calendar-search")
+        # Future callbacks run on executor threads.  Use a queued Qt signal to
+        # marshal completion back to this object's thread before touching any
+        # QObject, model, property, or public signal.
+        self._searchCompleted.connect(self._publish,Qt.QueuedConnection)
         location=QStandardPaths.writableLocation(QStandardPaths.AppDataLocation);self.store=SavedSearchStore(location)
         self.ruleModel=DictListModel(["ruleId","label","mode","name","nameOperator","currencies","impacts","sources","timeMode","earliest","latest","rawTime","minimum","maximum","depth","groupOperator"])
         self.savedSearchModel=DictListModel(["name"]);self.resultModel=DictListModel(["date","matchedCount","totalCount"]);self.eventModel=DictListModel(["eventKey","sourceId","currency","impact","name","time","actual","forecast","previous","sourceType","matched","rules"])
@@ -213,24 +218,22 @@ class AppController(QObject):
         if errors:self.error.emit("\n".join(errors));return
         self._generation+=1;generation=self._generation;self._cancel.set();self._cancel=Event();cancel=self._cancel;definition=copy.deepcopy(self.definition);path=self.reader.path;self.loading=True;self.stateChanged.emit()
         future=self.pool.submit(self._search_worker,path,definition,cancel)
-        future.add_done_callback(lambda f:self._publish(generation,cancel,f))
+        future.add_done_callback(lambda f:self._searchCompleted.emit(generation,cancel,f))
     @staticmethod
     def _search_worker(path,definition,cancel):
         # Policies inspect the complete event set on each candidate date. Global
         # restrictions are intentionally applied only by the filter engine.
         reader=DatabaseReader(path);events=reader.events(definition.start_date,definition.end_date);return search(events,definition,cancel)
+    @Slot(int,object,object)
     def _publish(self,generation,cancel,future):
-        from PySide6.QtCore import QTimer
-        def deliver():
-            if generation!=self._generation:return
-            self.loading=False
-            try:
-                value=future.result()
-                if cancel.is_set():self.stateChanged.emit();return
-                self.results=value;self._results_current=True;self.resultModel.reset([{"date":r.date_et,"matchedCount":r.matched_event_count,"totalCount":len(r.events)} for r in value]);self.selectDate(value[0].date_et if value else "");self.searchFinished.emit()
-            except Exception as exc:self.error.emit(str(exc))
-            self.stateChanged.emit()
-        QTimer.singleShot(0,self,deliver)
+        if generation!=self._generation:return
+        self.loading=False
+        try:
+            value=future.result()
+            if cancel.is_set():self.stateChanged.emit();return
+            self.results=value;self._results_current=True;self.resultModel.reset([{"date":r.date_et,"matchedCount":r.matched_event_count,"totalCount":len(r.events)} for r in value]);self.selectDate(value[0].date_et if value else "");self.searchFinished.emit()
+        except Exception as exc:self.error.emit(str(exc))
+        self.stateChanged.emit()
     @Slot()
     def cancelSearch(self):self._generation+=1;self._cancel.set();self.loading=False;self.stateChanged.emit()
     @Slot(str)
