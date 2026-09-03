@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Professional local-first Forex Factory calendar toolkit."
     )
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("desktop", help="Launch the native Forex Calendar Lab application")
 
     bootstrap = subparsers.add_parser("bootstrap", help="Download/import the MIT historical archive")
     bootstrap.add_argument("--archive-file", help="Legitimate local CSV/Parquet archive fallback")
@@ -106,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _prepare_args(argv: list[str] | None) -> list[str]:
     args = list(argv) if argv is not None else sys.argv[1:]
-    if not args or args[0] not in {"scrape", "view", "alerts-check", "schedule-info", "alerts-schedule-info", "test-notify", *DATA_COMMANDS}:
+    if not args or args[0] not in {"desktop", "scrape", "view", "alerts-check", "schedule-info", "alerts-schedule-info", "test-notify", *DATA_COMMANDS}:
         return ["scrape", *args]
     return args
 
@@ -114,6 +115,14 @@ def _prepare_args(argv: list[str] | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(_prepare_args(argv))
+    if args.command == "desktop":
+        try:
+            from PySide6 import QtCore  # noqa: F401 - deliberate lazy dependency check
+            from .mac_app.app import main as desktop_main
+        except ImportError:
+            print("PySide6 desktop dependencies are not installed. Run: python -m pip install -r requirements-macos.txt", file=sys.stderr)
+            return 2
+        return desktop_main([sys.argv[0]])
     if args.command in DATA_COMMANDS:
         return run_data_command(args)
     from .console import AppConsole
