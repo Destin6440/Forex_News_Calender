@@ -13,7 +13,7 @@ from PySide6.QtTest import QSignalSpy
 
 def wait_for_signal(spy,timeout=3000):
     """Wait unless a very fast background operation already emitted."""
-    return len(spy)>0 or spy.wait(timeout)
+    return spy.count()>0 or spy.wait(timeout)
 
 def make_database(path):
     connection=sqlite3.connect(path)
@@ -30,7 +30,9 @@ def test_real_qml_engine_loads_with_required_context(tmp_path):
         qml=Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml";engine.load(QUrl.fromLocalFile(str(qml)))
         app.processEvents()
     finally:qInstallMessageHandler(previous)
-    assert engine.rootObjects() and engine.rootObjects()[0].isVisible()
+    roots=engine.rootObjects()
+    assert roots, f"QML engine did not create a root object. Qt messages: {messages!r}"
+    assert roots[0].isVisible()
     assert not [message for message in messages if "Main.qml" in message]
     controller.shutdown()
 
@@ -89,7 +91,7 @@ def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatc
     # Executor completion is handed to Qt without sleeps; shutdown waits for the
     # old task, then processing events exercises stale-generation suppression.
     c.pool.shutdown(wait=True);app.processEvents()
-    assert list(c.resultModel.items)==published and len(spy)==1
+    assert list(c.resultModel.items)==published and spy.count()==1
 
 def test_event_name_combo_accepts_typed_and_suggested_values(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database);c=AppController(tmp_path);c.open_database(str(database));c.addRule()
