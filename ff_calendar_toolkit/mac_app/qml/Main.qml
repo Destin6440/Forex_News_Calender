@@ -3,100 +3,66 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import "components"
+
 ApplicationWindow {
- id: root; visible:true; width:controller.windowWidth; height:controller.windowHeight; x:controller.windowX; y:controller.windowY; minimumWidth:1100; minimumHeight:700; title:"Forex Calendar Lab"; color:"#09111f"
- onClosing:function(close){controller.saveWindowGeometry(x,y,width,height)}
- palette { window:"#09111f"; windowText:"#e7edf5"; base:"#111b2b"; text:"#e7edf5"; button:"#172438"; buttonText:"#e7edf5"; highlight:"#22d3ee" }
- property string selectedRule:""; property string toast:""
- Connections { target:controller; function onNotification(message){toast=message} function onError(message){errorDialog.text=message;errorDialog.open()} function onStateChanged(){searchName.text=controller.searchName;startField.text=controller.startDate;endField.text=controller.endDate;minimumField.text=String(controller.minimumEvents);maximumField.text=controller.maximumEvents<0?"":String(controller.maximumEvents)} }
- MessageDialog { id:errorDialog; title:"Forex Calendar Lab" }
- Dialog { id:about; title:"About Forex Calendar Lab"; standardButtons:Dialog.Ok; width:520; contentItem:TextArea { text:"Forex Calendar Lab 1.0.0\n\nOffline generic historical calendar analysis.\n\n"+controller.diagnostics(); readOnly:true; wrapMode:TextEdit.Wrap } }
- Dialog{id:settingsDialog;title:"Settings";modal:true;width:600;standardButtons:Dialog.Close;ColumnLayout{Label{text:"Current database";font.bold:true}Label{text:controller.databasePath||"None selected";wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Button{text:"Choose Database";onClicked:controller.chooseDatabase()}Label{text:"Application support";font.bold:true}Label{text:controller.applicationSupportPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Label{text:"Saved searches";font.bold:true}Label{text:controller.savedSearchPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Label{text:"Application log";font.bold:true}Label{text:controller.logPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}}}
- Dialog { id:saved; title:"Saved Searches"; modal:true; width:520; height:500; standardButtons:Dialog.Close
-  ColumnLayout { anchors.fill:parent; ListView { Layout.fillWidth:true; Layout.fillHeight:true; model:savedSearchModel; delegate:RowLayout { width:ListView.view.width; property string savedName:name; TextField{id:renameField;text:savedName;Layout.fillWidth:true} Button{text:"Load";onClicked:{controller.loadSearch(savedName);saved.close()}} Button{text:"Rename";onClicked:controller.renameSearch(savedName,renameField.text)} Button{text:"Duplicate";onClicked:controller.duplicateSearch(savedName,savedName+" Copy")} Button{text:"Delete";onClicked:controller.deleteSearch(savedName)} } } RowLayout { Button{text:"Import JSON";onClicked:controller.importSearch()} Button{text:"Export current JSON";onClicked:controller.exportSearch()} } }
- }
- Dialog{id:saveAs;title:"Save Search As";modal:true;standardButtons:Dialog.Save|Dialog.Cancel;onAccepted:controller.saveSearchAs(saveAsName.text);TextField{id:saveAsName;placeholderText:"Search name";width:320}}
- Dialog { id:exports; title:"Export results"; modal:true; standardButtons:Dialog.Close
-  ColumnLayout { ComboBox{id:scope;model:["all_events","matched_events","matching_dates"]} RowLayout{Button{text:"Export CSV";onClicked:controller.exportResults("csv",scope.currentText)} Button{text:"Export XLSX";onClicked:controller.exportResults("xlsx",scope.currentText)}} Button{text:"Copy Matching Dates";onClicked:controller.copyMatchingDates()} Button{text:"Copy Search Definition";onClicked:controller.copySearchDefinition()} Button{text:"Reveal Last Export";onClicked:controller.revealExport()} }
- }
- Shortcut { sequences:[StandardKey.New]; onActivated:controller.newSearch() } Shortcut { sequences:[StandardKey.Save];onActivated:controller.saveSearch()} Shortcut { sequences:[StandardKey.Refresh];onActivated:controller.refreshDatabase()} Shortcut { sequence:"Ctrl+E";onActivated:exports.open()} Shortcut { sequences:[StandardKey.Cancel];onActivated:controller.cancelSearch()} Shortcut { sequence:"Ctrl+Return";onActivated:controller.runSearch()}
- component Card: Rectangle { color:"#111b2b";radius:10;border.color:"#26364d" }
- RowLayout { anchors.fill:parent; spacing:0
-  Rectangle { Layout.preferredWidth:260;Layout.fillHeight:true;color:"#0c1626";border.color:"#26364d"
-   ColumnLayout { anchors.fill:parent;anchors.margins:14
-    Label{text:"FOREX CALENDAR LAB";color:"#22d3ee";font.bold:true} Button{text:"＋ New Search";Layout.fillWidth:true;onClicked:controller.newSearch()} Button{text:"☆ Saved Searches";Layout.fillWidth:true;onClicked:saved.open()}
-    Label{text:"DATABASE";color:"#8090a6"} Label{text:controller.databaseStatus;font.bold:true;wrapMode:Text.Wrap;Layout.fillWidth:true} Label{text:controller.databasePath;color:"#93a4b8";wrapMode:Text.WrapAnywhere;Layout.fillWidth:true} Label{text:controller.databaseSummary;color:"#93a4b8";wrapMode:Text.Wrap;Layout.fillWidth:true}
-    Button{text:"Choose Database";Layout.fillWidth:true;onClicked:controller.chooseDatabase()} Button{text:"Refresh Database";Layout.fillWidth:true;onClicked:controller.refreshDatabase()} Button{text:"Reveal in Finder";enabled:controller.databasePath!=="";Layout.fillWidth:true;onClicked:controller.revealDatabase()}
-    Label{text:"AVAILABLE VALUES";color:"#8090a6"} Label{text:controller.currencies.length+" currencies · "+controller.impacts.length+" impacts\n"+controller.sources.length+" source types · "+controller.eventNames.length+" event names";wrapMode:Text.Wrap}
-    Item{Layout.fillHeight:true} Button{text:"Settings";Layout.fillWidth:true;onClicked:settingsDialog.open()} Button{text:"Copy Diagnostics";Layout.fillWidth:true;onClicked:controller.copyDiagnostics()} Button{text:"Help / About";Layout.fillWidth:true;onClicked:about.open()}
-   }
-  }
-  ColumnLayout { Layout.fillWidth:true;Layout.fillHeight:true;spacing:0
-   Rectangle { Layout.fillWidth:true;height:64;color:"#0e1929"; RowLayout { anchors.fill:parent;anchors.margins:12
-    TextField{id:searchName;objectName:"searchNameField";text:controller.searchName;placeholderText:"Search name";Layout.preferredWidth:300;onEditingFinished:controller.setSearchName(text)} Item{Layout.fillWidth:true} Button{text:"Save";onClicked:controller.saveSearch()} Button{text:"Save As";onClicked:saveAs.open()} Button{text:"Export";enabled:controller.resultCount>0&&controller.resultsCurrent;onClicked:exports.open()} Button{text:controller.isLoading?"Cancel":"Run Search";highlighted:true;onClicked:controller.isLoading?controller.cancelSearch():controller.runSearch()}
-   }}
-   SplitView { Layout.fillWidth:true;Layout.fillHeight:true
-    ScrollView { SplitView.fillWidth:true;SplitView.minimumWidth:650
-     Item { width:parent.width;implicitHeight:builderLayout.implicitHeight+36
-     ColumnLayout { id:builderLayout;x:18;y:18;width:parent.width-36;spacing:12
-      RowLayout { Label{text:"Rule Builder";font.pixelSize:22;font.bold:true} Item{Layout.fillWidth:true} ComboBox{model:["AND","OR"];currentIndex:model.indexOf(controller.rootOperator);onActivated:controller.setRootOperator(currentText)} }
-      Label{text:"Currency, impact, source, and event suggestions come from the selected database.";color:"#93a4b8"}
-      ListView { Layout.fillWidth:true;implicitHeight:Math.max(150,contentHeight);model:ruleModel;interactive:false;spacing:10
-       delegate:Card { x:Math.min(depth*18,120);width:ListView.view.width-x;height:groupOperator!==""?60:260
-        Loader { anchors.fill:parent;anchors.margins:10;sourceComponent:groupOperator!==""?groupCard:ruleCard }
-        Component{id:groupCard;RowLayout{Label{text:"Nested group";font.bold:true}ComboBox{model:["AND","OR"];currentIndex:model.indexOf(groupOperator);onActivated:controller.updateGroup(ruleId,currentText)}Button{text:"Add Rule";onClicked:controller.addRuleToGroup(ruleId)}Button{text:"Add Group";onClicked:controller.addGroupToGroup(ruleId)}Item{Layout.fillWidth:true}Button{text:"Delete Group";onClicked:controller.removeNode(ruleId)}}}
-        Component{id:ruleCard;ColumnLayout{
-         RowLayout{Layout.fillWidth:true;Label{text:"Rule";font.bold:true}ComboBox{id:modeBox;model:["required","optional","excluded"];currentIndex:model.indexOf(mode);onActivated:controller.updateRule(ruleId,"mode",currentText)}Item{Layout.fillWidth:true}Button{text:"Duplicate";onClicked:controller.duplicateRule(ruleId)}Button{text:"Delete";onClicked:controller.removeNode(ruleId)}}
-         RowLayout{Layout.fillWidth:true;TextField{placeholderText:"Rule label (optional)";text:label;onEditingFinished:controller.updateRule(ruleId,"label",text)}ComboBox{id:eventName;objectName:"eventNameCombo";editable:true;model:controller.eventNames;editText:name;Layout.fillWidth:true;onAccepted:controller.updateRule(ruleId,"name",editText);onActivated:function(index){controller.updateRule(ruleId,"name",model[index])};onActiveFocusChanged:if(!activeFocus&&editText!==name)controller.updateRule(ruleId,"name",editText)}ComboBox{id:op;model:["contains","exact","starts_with","ends_with","regex"];currentIndex:model.indexOf(nameOperator);onActivated:controller.updateRule(ruleId,"nameOperator",currentText)}}
-         RowLayout{Layout.fillWidth:true;MultiSelect{Layout.fillWidth:true;options:controller.currencies;selectedText:currencies;onSelectionChanged:value=>controller.updateRule(ruleId,"currencies",value)}MultiSelect{Layout.fillWidth:true;options:controller.impacts;selectedText:impacts;onSelectionChanged:value=>controller.updateRule(ruleId,"impacts",value)}MultiSelect{Layout.fillWidth:true;options:controller.sources;selectedText:sources;onSelectionChanged:value=>controller.updateRule(ruleId,"sources",value)}}
-         RowLayout{ComboBox{id:tm;model:["any","timed","clockless"];currentIndex:model.indexOf(timeMode);onActivated:controller.updateRule(ruleId,"timeMode",currentText)}TextField{placeholderText:"Earliest HH:MM";text:earliest;onEditingFinished:controller.updateRule(ruleId,"earliest",text)}TextField{placeholderText:"Latest HH:MM";text:latest;onEditingFinished:controller.updateRule(ruleId,"latest",text)}TextField{placeholderText:"Raw clockless label";text:rawTime;onEditingFinished:controller.updateRule(ruleId,"rawTime",text)}}
-         RowLayout{Label{text:"Occurrences"}SpinBox{from:0;to:99;value:minimum;onValueModified:controller.updateRule(ruleId,"minimum",value)}Label{text:"to"}SpinBox{from:-1;to:99;value:maximum;editable:true;onValueModified:controller.updateRule(ruleId,"maximum",value)}Label{text:"(-1 = unlimited)";color:"#93a4b8"}}
-        }}
-       }
-      }
-      Card { visible:ruleModel.count===0;Layout.fillWidth:true;height:150;Column{anchors.centerIn:parent;spacing:8;Label{text:"Start with an empty filter";font.pixelSize:18;font.bold:true}Label{text:"Add any rule or nested group—no presets are installed.";color:"#93a4b8"}} }
-      RowLayout{Button{text:"＋ Add Rule";onClicked:controller.addRule()}Button{text:"⊕ Add Nested Group";onClicked:controller.addGroup()}Button{text:"Clear Search";onClicked:controller.newSearch()}}
-      Label{text:"Additional-event policy";font.bold:true}ComboBox{Layout.fillWidth:true;model:["Allow additional events","Only within counted scope","Exact event set"];currentIndex:["allow","counted_scope","exact"].indexOf(controller.additionalPolicy);onActivated:controller.setPolicy(currentText)}
-      GridLayout{columns:2;Layout.fillWidth:true
-       TextField{id:startField;placeholderText:"Start date YYYY-MM-DD";text:controller.startDate;Layout.fillWidth:true;onEditingFinished:controller.setGlobal("start_date",text)} TextField{id:endField;placeholderText:"End date YYYY-MM-DD";text:controller.endDate;Layout.fillWidth:true;onEditingFinished:controller.setGlobal("end_date",text)}
-       MultiSelect{options:controller.currencies;selectedText:controller.globalCurrencies;onSelectionChanged:value=>controller.setGlobal("currencies",value)} MultiSelect{options:controller.impacts;selectedText:controller.globalImpacts;onSelectionChanged:value=>controller.setGlobal("impacts",value)}
-       MultiSelect{options:controller.sources;selectedText:controller.globalSources;onSelectionChanged:value=>controller.setGlobal("source_types",value)} MultiSelect{options:controller.currencies;selectedText:controller.countedCurrencies;onSelectionChanged:value=>controller.setGlobal("counted_currencies",value)}
-       MultiSelect{options:controller.impacts;selectedText:controller.countedImpacts;onSelectionChanged:value=>controller.setGlobal("counted_impacts",value)}
-       TextField {
-        id: minimumField
-        placeholderText: "Minimum total events (0)"
-        text: String(controller.minimumEvents)
-        Layout.fillWidth: true
-        validator: IntValidator { bottom: 0 }
-        onEditingFinished: controller.setGlobal("minimum_events", text)
-       }
-       TextField {
-        id: maximumField
-        placeholderText: "Maximum total events (none)"
-        text: controller.maximumEvents < 0 ? "" : String(controller.maximumEvents)
-        Layout.fillWidth: true
-        validator: IntValidator { bottom: 0 }
-        onEditingFinished: controller.setGlobal("maximum_events", text)
-       }
-      }
-      RowLayout{Label{text:"Weekdays";font.bold:true}Repeater{model:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];CheckBox{required property int index;required property string modelData;text:modelData;checked:controller.weekdays.indexOf(index)>=0;onToggled:controller.toggleWeekday(index,checked)}}}
-      Label{text:controller.validationMessage();visible:text!=="";color:"#fb7185";wrapMode:Text.Wrap;Layout.fillWidth:true}Item{height:16}
-     }
-     }
+    id:root
+    objectName:"mainWindow"
+    visible:true
+    width:controller.windowWidth;height:controller.windowHeight;x:controller.windowX;y:controller.windowY
+    minimumWidth:1100;minimumHeight:700
+    title:controller.searchName+" — Forex Calendar Lab"
+    color:DesignTokens.window
+    palette { window:DesignTokens.window;windowText:DesignTokens.text;base:DesignTokens.surface;text:DesignTokens.text;button:DesignTokens.surface;buttonText:DesignTokens.text;highlight:DesignTokens.accent }
+    property string selectedRule:""
+    property string renameSource:""
+    property bool sidebarShown:controller.sidebarVisible
+    onClosing:function(close){controller.saveWindowGeometry(x,y,width,height);controller.savePaneWidths(workspace.width,results.width)}
+
+    Connections { target:controller
+        function onError(message){errorDialog.text=message;errorDialog.open()}
+        function onNotification(message){announcement.text=message;announcement.visible=true;announcementTimer.restart()}
     }
-    Card { SplitView.preferredWidth:470;SplitView.minimumWidth:380;radius:0
-     ColumnLayout { anchors.fill:parent;anchors.margins:14
-      RowLayout{Label{text:"Results";font.pixelSize:22;font.bold:true}Item{Layout.fillWidth:true}ComboBox{id:sortCombo;objectName:"resultSortCombo";model:["Newest first","Oldest first"];currentIndex:controller.resultSort==="oldest"?1:0;onActivated:controller.setSort(currentText)}BusyIndicator{running:controller.isLoading;visible:running}}
-      Label{text:controller.resultCount+" dates · "+controller.matchedEventCount+" matched · "+controller.totalEventCount+" total";color:"#93a4b8"}
-      TabBar{id:views;Layout.fillWidth:true;TabButton{text:"List"}TabButton{text:"Calendar"}}
-      ListView { visible:views.currentIndex===0;Layout.fillWidth:true;Layout.preferredHeight:220;model:resultModel;spacing:6;delegate:Button{width:ListView.view.width;text:date+"   "+matchedCount+" matched · "+totalCount+" total";onClicked:controller.selectDate(date)} }
-      GridView { visible:views.currentIndex===1;Layout.fillWidth:true;Layout.preferredHeight:220;cellWidth:108;cellHeight:70;model:resultModel;delegate:Button{width:100;height:62;text:date.slice(5)+"\n"+matchedCount+" matched";onClicked:controller.selectDate(date)} }
-      Label{text:"Selected date events";font.bold:true}ListView { Layout.fillWidth:true;Layout.fillHeight:true;model:eventModel;spacing:6;delegate:Card{width:ListView.view.width;height:118;border.color:matched?"#22d3ee":"#26364d";Column{anchors.fill:parent;anchors.margins:9;spacing:3;Label{text:(matched?"MATCHED":"UNMATCHED")+" · "+currency+" · "+impact+" · "+time;color:matched?"#34d399":"#93a4b8";font.bold:true}Label{text:name;font.bold:true}Label{text:"Actual "+actual+"   Forecast "+forecast+"   Previous "+previous;color:"#b8c5d6"}Label{text:"Rules: "+(rules||"—")+" · Source: "+sourceType+" · ID: "+sourceId;color:"#8090a6"}Label{text:"Event key: "+eventKey;color:"#65758a"}}} }
-      Label{visible:!controller.isLoading&&controller.resultCount===0;text:ruleModel.count===0?"Add a rule to begin.":"No matching dates. Adjust the filter and try again.";color:"#93a4b8"}
-      Label{text:toast;color:"#34d399";visible:text!==""}
-     }
+    Timer{id:announcementTimer;interval:4000;onTriggered:announcement.visible=false}
+    Label{id:announcement;visible:false;z:100;anchors.horizontalCenter:parent.horizontalCenter;anchors.bottom:parent.bottom;anchors.bottomMargin:DesignTokens.section;padding:DesignTokens.spaceLarge;text:"";color:DesignTokens.success;background:Rectangle{color:DesignTokens.surface;radius:DesignTokens.radius;border.color:DesignTokens.success};Accessible.name:text}
+    MessageDialog{id:errorDialog;title:"Forex Calendar Lab"}
+    Dialog{id:about;title:"About Forex Calendar Lab";standardButtons:Dialog.Ok;width:520;contentItem:TextArea{text:"Forex Calendar Lab\n\nOffline, read-only historical calendar analysis.\n\n"+controller.diagnostics();readOnly:true;wrapMode:TextEdit.Wrap}}
+    Dialog{id:settingsDialog;title:"Settings";modal:true;width:620;standardButtons:Dialog.Close;ColumnLayout{Label{text:"Database path";font.bold:true}Label{text:controller.databasePath||"None selected";wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Button{text:"Choose Database…";onClicked:controller.chooseDatabase()}Label{text:"Application support";font.bold:true}Label{text:controller.applicationSupportPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Label{text:"Application log";font.bold:true}Label{text:controller.logPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}}}
+    Dialog{id:saveAsDialog;title:"Save Search As";modal:true;standardButtons:Dialog.Save|Dialog.Cancel;onAccepted:controller.saveSearchAs(saveAsName.text);TextField{id:saveAsName;width:340;placeholderText:"Search name";Accessible.name:"New search name"}}
+    Dialog{id:renameDialog;title:"Rename Saved Search";modal:true;standardButtons:Dialog.Save|Dialog.Cancel;onAccepted:controller.renameSearch(root.renameSource,renameName.text);TextField{id:renameName;width:340;Accessible.name:"New saved-search name"}}
+    Dialog{id:exportDialog;title:"Export Results";modal:true;standardButtons:Dialog.Close;ColumnLayout{Label{text:"Export scope"}ComboBox{id:exportScope;model:["all_events","matched_events","matching_dates"];Accessible.name:"Export scope"}RowLayout{Button{text:"Export CSV…";onClicked:controller.exportResults("csv",exportScope.currentText)}Button{text:"Export XLSX…";onClicked:controller.exportResults("xlsx",exportScope.currentText)}}Button{text:"Copy Matching Dates";onClicked:controller.copyMatchingDates()}Button{text:"Reveal Last Export";enabled:controller.hasLastExport;onClicked:controller.revealExport()}}}
+
+    Shortcut{sequences:["Ctrl+Return","Meta+Return"];onActivated:controller.runSearch()}
+    Shortcut{sequences:[StandardKey.Cancel];enabled:controller.isLoading;onActivated:controller.cancelSearch()}
+    Action{id:newAction;text:"New Search";shortcut:StandardKey.New;onTriggered:controller.newSearch()}
+    Action{id:saveAction;text:"Save";shortcut:StandardKey.Save;onTriggered:controller.saveSearch()}
+    Action{id:saveAsAction;text:"Save As…";shortcut:StandardKey.SaveAs;onTriggered:saveAsDialog.open()}
+    Action{id:importAction;text:"Import Search Definition…";shortcut:StandardKey.Open;onTriggered:controller.importSearch()}
+    Action{id:copyAction;text:"Copy Search Definition";shortcut:StandardKey.Copy;onTriggered:controller.copySearchDefinition()}
+    Action{id:deleteAction;text:"Delete Selected Rule or Group";shortcut:StandardKey.Delete;enabled:root.selectedRule!=="";onTriggered:controller.removeNode(root.selectedRule)}
+    Action{id:helpAction;text:"Forex Calendar Lab Help";shortcut:StandardKey.HelpContents;onTriggered:about.open()}
+    Action{id:settingsAction;text:"Settings…";shortcut:StandardKey.Preferences;onTriggered:settingsDialog.open()}
+    Action{id:quitAction;text:"Quit Forex Calendar Lab";shortcut:StandardKey.Quit;onTriggered:Qt.quit()}
+    menuBar:MenuBar{
+        Menu{title:"Forex Calendar Lab";MenuItem{text:"About Forex Calendar Lab";onTriggered:about.open()}MenuItem{action:settingsAction}MenuSeparator{}MenuItem{text:"Hide Forex Calendar Lab";onTriggered:root.showMinimized()}MenuSeparator{}MenuItem{action:quitAction}}
+        Menu{title:"File";MenuItem{action:newAction}MenuSeparator{}MenuItem{action:saveAction}MenuItem{action:saveAsAction}MenuSeparator{}MenuItem{action:importAction}MenuItem{text:"Export Search Definition…";onTriggered:controller.exportSearch()}MenuItem{text:"Export Results…";enabled:controller.resultsCurrent;onTriggered:exportDialog.open()}MenuSeparator{}MenuItem{text:"Choose Database…";onTriggered:controller.chooseDatabase()}}
+        Menu{title:"Edit";MenuItem{text:"Duplicate Selected Rule or Group";enabled:root.selectedRule!=="";onTriggered:controller.duplicateNode(root.selectedRule)}MenuItem{action:deleteAction}MenuSeparator{}MenuItem{action:copyAction}}
+        Menu{title:"View";MenuItem{text:root.sidebarShown?"Hide Sidebar":"Show Sidebar";onTriggered:{root.sidebarShown=!root.sidebarShown;controller.saveSidebarState(root.sidebarShown,sidebar.userWidth)}}MenuItem{text:"List View";onTriggered:controller.saveResultsView(0)}MenuItem{text:"Calendar View";onTriggered:controller.saveResultsView(1)}MenuSeparator{}MenuItem{text:"Reset Pane Layout";onTriggered:{sidebar.userWidth=250;workspace.SplitView.preferredWidth=680;results.SplitView.preferredWidth=470;controller.saveSidebarState(root.sidebarShown,250);controller.savePaneWidths(680,470)}}}
+        Menu{title:"Help";MenuItem{action:helpAction}MenuItem{text:"Copy Diagnostics";onTriggered:controller.copyDiagnostics()}MenuItem{text:"Reveal Log";onTriggered:controller.revealLog()}}
     }
-   }
-  }
- }
+    header:AppToolbar{onSaveAsRequested:saveAsDialog.open();onExportRequested:exportDialog.open()}
+
+    SplitView{id:split;anchors.fill:parent;orientation:Qt.Horizontal
+        NavigationSidebar{id:sidebar;visible:root.sidebarShown;SplitView.preferredWidth:userWidth;SplitView.minimumWidth:190;SplitView.maximumWidth:420;onRenameRequested:function(oldName){root.renameSource=oldName;renameName.text=oldName;renameDialog.open()}}
+        ScrollView{id:workspace;objectName:"ruleWorkspace";SplitView.fillWidth:true;SplitView.preferredWidth:controller.workspaceWidth;SplitView.minimumWidth:520
+            Item{width:parent.width;implicitHeight:workspaceColumn.implicitHeight+DesignTokens.section*2
+                ColumnLayout{id:workspaceColumn;x:DesignTokens.section;y:DesignTokens.section;width:parent.width-DesignTokens.section*2;spacing:DesignTokens.section
+                    GlobalFilters{Layout.fillWidth:true}
+                    RuleBuilder{Layout.fillWidth:true;onSelected:identifier=>root.selectedRule=identifier}
+                    AdditionalPolicy{Layout.fillWidth:true}
+                    StatusBanner{Layout.fillWidth:true;kind:"error";message:controller.validationMessage()}
+                }
+            }
+        }
+        ResultsPane{id:results;objectName:"resultsPane";SplitView.preferredWidth:controller.resultsPaneWidth;SplitView.minimumWidth:350}
+    }
 }

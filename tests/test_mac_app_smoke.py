@@ -3,19 +3,42 @@ from pathlib import Path
 from threading import Event
 import pytest
 import sqlite3
+from contextlib import contextmanager
 os.environ["QT_QPA_PLATFORM"]="offscreen"
 os.environ["QT_QUICK_CONTROLS_STYLE"]="Basic"
 os.environ["QT_QUICK_BACKEND"]="software"
 PySide6=pytest.importorskip("PySide6")
-from PySide6.QtCore import QObject,QThread,QUrl,qInstallMessageHandler
+from PySide6.QtCore import QMetaObject,QObject,QThread,Qt,qInstallMessageHandler
 from PySide6.QtWidgets import QApplication,QMessageBox
-from PySide6.QtQml import QQmlApplicationEngine
 from ff_calendar_toolkit.mac_app.controller import AppController
+from ff_calendar_toolkit.mac_app.qml_runtime import create_engine,destroy_engine
 from PySide6.QtTest import QSignalSpy
 
-def wait_for_signal(spy,timeout=3000):
+def wait_for_signal(spy,controller,timeout=3000):
     """Wait unless a very fast background operation already emitted."""
-    return spy.count()>0 or spy.wait(timeout)
+    if spy.count()>0 or spy.wait(timeout):return
+    pytest.fail(f"Search timed out after {timeout} ms: {controller.searchDiagnostics()!r}")
+
+@contextmanager
+def qml_scene(controller):
+    """Keep QML message capture active until the object tree is gone."""
+    messages=[]
+    previous=qInstallMessageHandler(lambda kind,context,message:messages.append(message))
+    engine=root=None
+    try:
+        engine,root=create_engine(controller)
+        yield engine,root
+    finally:
+        try:
+            if engine is not None:destroy_engine(engine)
+        finally:
+            try:
+                controller.shutdown()
+                QApplication.instance().processEvents()
+            finally:
+                qInstallMessageHandler(previous)
+    bad=[m for m in messages if "Main.qml" in m or "controller is null" in m or "QThread: Destroyed" in m or "shortcut" in m.lower()]
+    assert not bad, f"QML loading/teardown warnings: {bad!r}"
 
 def make_database(path):
     connection=sqlite3.connect(path)
@@ -25,18 +48,9 @@ def make_database(path):
 
 def test_real_qml_engine_loads_with_required_context(tmp_path):
     app=QApplication.instance() or QApplication([]);controller=AppController(tmp_path)
-    engine=QQmlApplicationEngine();context=engine.rootContext()
-    for name,value in {"controller":controller,"ruleModel":controller.ruleModel,"resultModel":controller.resultModel,"eventModel":controller.eventModel,"savedSearchModel":controller.savedSearchModel}.items():context.setContextProperty(name,value)
-    messages=[];previous=qInstallMessageHandler(lambda kind,context,message:messages.append(message))
-    try:
-        qml=Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml";engine.load(QUrl.fromLocalFile(str(qml)))
+    with qml_scene(controller) as (engine,root):
         app.processEvents()
-    finally:qInstallMessageHandler(previous)
-    roots=engine.rootObjects()
-    assert roots, f"QML engine did not create a root object. Qt messages: {messages!r}"
-    assert roots[0].isVisible()
-    assert not [message for message in messages if "Main.qml" in message]
-    controller.shutdown()
+        assert root.isVisible()
 
 def test_controller_rule_and_saved_search_actions(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"))
@@ -47,9 +61,9 @@ def test_controller_exact_search_uses_complete_date_and_state_sync(tmp_path,monk
     c=AppController(tmp_path);assert c.open_database(str(database));assert c.currencies==["Currency A","Currency B"] and "2 events" in c.databaseSummary
     c.addRule();rule=c.ruleModel.items[0]["ruleId"];c.updateRule(rule,"currencies","Currency A");c.setGlobal("currencies","Currency A");c.setPolicy("Exact event set")
     completion_threads=[];c.searchFinished.connect(lambda:completion_threads.append(QThread.currentThread()))
-    spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert c.resultCount==0 and c.resultsCurrent
+    spy=QSignalSpy(c.searchFinished);c.runSearch();wait_for_signal(spy,c);assert c.resultCount==0 and c.resultsCurrent
     assert completion_threads[-1]==c.thread() and c.thread()==app.thread()
-    c.setPolicy("Allow additional events");assert not c.resultsCurrent;spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert c.resultCount==1
+    c.setPolicy("Allow additional events");assert not c.resultsCurrent;spy=QSignalSpy(c.searchFinished);c.runSearch();wait_for_signal(spy,c);assert c.resultCount==1
     c.setSearchName("Alpha");c.saveSearch();c.newSearch();assert c.searchName=="Untitled Search";c.loadSearch("Alpha");assert c.searchName=="Alpha" and c.globalCurrencies=="Currency A"
     c.setGlobal("impacts","red");assert not c.resultsCurrent and c.resultCount==0;c.shutdown()
 
@@ -66,16 +80,14 @@ def test_saved_name_validation_collisions_and_qml_state(tmp_path,monkeypatch):
     c.newSearch();assert c.saveSearchAs("Beta")
     monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QMessageBox.question",lambda *args:QMessageBox.No)
     assert not c.saveSearchAs("Alpha");assert not c.renameSearch("Beta","Alpha");assert not c.duplicateSearch("Beta","Alpha")
-    engine=QQmlApplicationEngine();context=engine.rootContext()
-    for name,value in {"controller":c,"ruleModel":c.ruleModel,"resultModel":c.resultModel,"eventModel":c.eventModel,"savedSearchModel":c.savedSearchModel}.items():context.setContextProperty(name,value)
-    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml")));root=engine.rootObjects()[0]
-    c.loadSearch("Alpha");app.processEvents();field=root.findChild(QObject,"searchNameField");assert field is not None and field.property("text")=="Alpha";c.shutdown()
+    with qml_scene(c) as (engine,root):
+        c.loadSearch("Alpha");app.processEvents();field=root.findChild(QObject,"searchNameField");assert field is not None and field.property("text")=="Alpha"
 
 def test_oldest_saved_search_executes_oldest_first(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database)
     connection=sqlite3.connect(database);connection.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",("c","Event Alpha","event alpha","Currency A","red","2025-01-07","09:00",None,"fixture","c",None,None,None));connection.commit();connection.close()
     c=AppController(tmp_path);c.open_database(str(database));c.addRule();c.setSort("Oldest first");c.saveSearchAs("Oldest");c.newSearch();c.loadSearch("Oldest");assert c.resultSort=="oldest"
-    spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert [item["date"] for item in c.resultModel.items]==["2025-01-06","2025-01-07"];c.shutdown()
+    spy=QSignalSpy(c.searchFinished);c.runSearch();wait_for_signal(spy,c);assert [item["date"] for item in c.resultModel.items]==["2025-01-06","2025-01-07"];c.shutdown()
 
 def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database)
@@ -87,7 +99,7 @@ def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatc
         return original(path,definition,cancel)
     monkeypatch.setattr(c,"_search_worker",controlled_worker)
     c.setSearchName("Old search");c.runSearch();assert old_started.wait(1)
-    c.setSearchName("New search");spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy)
+    c.setSearchName("New search");spy=QSignalSpy(c.searchFinished);c.runSearch();wait_for_signal(spy,c)
     assert c.resultsCurrent and c.resultCount==1
     published=list(c.resultModel.items);release_old.set()
     # Release the old worker and wait through the controller's deterministic
@@ -97,8 +109,16 @@ def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatc
 
 def test_event_name_combo_accepts_typed_and_suggested_values(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database);c=AppController(tmp_path);c.open_database(str(database));c.addRule()
-    engine=QQmlApplicationEngine();context=engine.rootContext()
-    for name,value in {"controller":c,"ruleModel":c.ruleModel,"resultModel":c.resultModel,"eventModel":c.eventModel,"savedSearchModel":c.savedSearchModel}.items():context.setContextProperty(name,value)
-    engine.load(QUrl.fromLocalFile(str(Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml")));app.processEvents();combo=engine.rootObjects()[0].findChild(QObject,"eventNameCombo");assert combo is not None
-    combo.setProperty("editText","Event Gamma");combo.accepted.emit();app.processEvents();assert c.definition.root.children[0].name=="Event Gamma"
-    combo=engine.rootObjects()[0].findChild(QObject,"eventNameCombo");combo.setProperty("currentIndex",0);combo.activated.emit(0);app.processEvents();assert c.definition.root.children[0].name in c.eventNames;c.shutdown()
+    with qml_scene(c) as (engine,root):
+        app.processEvents();rule_list=root.findChild(QObject,"ruleList");assert rule_list is not None
+        force_layout=getattr(rule_list,"forceLayout",None)
+        if callable(force_layout):force_layout()
+        else:assert QMetaObject.invokeMethod(rule_list,"forceLayout",Qt.DirectConnection)
+        delegate=rule_list.property("currentItem")
+        assert delegate is not None
+        combo=delegate.findChild(QObject,"eventNameCombo");assert combo is not None
+        combo.setProperty("editText","Event Gamma");combo.accepted.emit();app.processEvents();assert c.definition.root.children[0].name=="Event Gamma"
+        if callable(force_layout):force_layout()
+        else:assert QMetaObject.invokeMethod(rule_list,"forceLayout",Qt.DirectConnection)
+        delegate=rule_list.property("currentItem");combo=delegate.findChild(QObject,"eventNameCombo")
+        combo.setProperty("currentIndex",0);combo.activated.emit(0);app.processEvents();assert c.definition.root.children[0].name in c.eventNames

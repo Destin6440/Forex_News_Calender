@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy,json,os,subprocess,time,uuid
 from pathlib import Path
 from threading import Event
-from PySide6.QtCore import QAbstractListModel,QModelIndex,QObject,Property,Qt,QSettings,QStandardPaths,QThread,Signal,Slot
+from PySide6.QtCore import QAbstractListModel,QCoreApplication,QEvent,QModelIndex,QObject,Property,Qt,QSettings,QStandardPaths,QThread,Signal,Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QFileDialog,QMessageBox
 from .database_reader import DatabaseReader,discover_database
@@ -27,37 +27,66 @@ class DictListModel(QAbstractListModel):
 
 class SearchWorker(QObject):
     """Run one immutable search request entirely in a dedicated Qt thread."""
-    succeeded=Signal(int,object)
-    failed=Signal(int,str)
-    cancelled=Signal(int)
     finished=Signal()
 
-    def __init__(self,generation,path,definition,cancel,search_function):
-        super().__init__();self.generation=generation;self.path=path;self.definition=definition;self.cancel_event=cancel;self.search_function=search_function
+    def __init__(self,controller,generation,path,definition,cancel,search_function):
+        super().__init__();self.controller=controller;self.generation=generation;self.path=path;self.definition=definition;self.cancel_event=cancel;self.search_function=search_function;self.started=False;self.completed=False;self.exception=""
 
     @Slot()
     def run(self):
+        self.started=True
         try:
             value=self.search_function(self.path,self.definition,self.cancel_event)
-            if self.cancel_event.is_set():self.cancelled.emit(self.generation)
-            else:self.succeeded.emit(self.generation,value)
+            outcome="cancelled" if self.cancel_event.is_set() else "success"
+            QCoreApplication.postEvent(self.controller,SearchResultEvent(self.generation,outcome,data=value))
         except Exception as exc:
-            if self.cancel_event.is_set():self.cancelled.emit(self.generation)
-            else:self.failed.emit(self.generation,str(exc))
-        finally:self.finished.emit()
+            self.exception=str(exc);outcome="cancelled" if self.cancel_event.is_set() else "failure"
+            QCoreApplication.postEvent(self.controller,SearchResultEvent(self.generation,outcome,error=self.exception))
+        finally:self.completed=True;self.finished.emit()
+
+_SEARCH_RESULT_EVENT_TYPE=QEvent.Type(QEvent.registerEventType())
+
+class SearchResultEvent(QEvent):
+    """Object-bearing result message owned and dispatched by Qt's event queue."""
+    def __init__(self,generation,outcome,data=None,error=""):
+        super().__init__(_SEARCH_RESULT_EVENT_TYPE);self.generation=generation;self.outcome=outcome;self.data=data;self.error=error
 
 class AppController(QObject):
     stateChanged=Signal(); notification=Signal(str); error=Signal(str); searchFinished=Signal(); requestChooseDatabase=Signal()
     def __init__(self,repo_root=None,parent=None):
-        super().__init__(parent);self.repo_root=Path(repo_root or Path.cwd());self.settings=QSettings();self.reader=None;self.facets={};self.definition=SearchDefinition();self.results=[];self.selected=None;self.loading=False;self.progress=0;self.last_export="";self._results_current=False;self._generation=0;self._cancel=Event();self._searches={}
+        super().__init__(parent);self.repo_root=Path(repo_root or Path.cwd());self.settings=QSettings();self.reader=None;self.facets={};self.definition=SearchDefinition();self.results=[];self.selected=None;self.loading=False;self.progress=0;self.last_export="";self._results_current=False;self._results_stale=False;self._search_state="idle";self._status_message="Ready";self._collapsed_groups=set();self._generation=0;self._cancel=Event();self._searches={}
         location=QStandardPaths.writableLocation(QStandardPaths.AppDataLocation);self.store=SavedSearchStore(location)
-        self.ruleModel=DictListModel(["ruleId","label","mode","name","nameOperator","currencies","impacts","sources","timeMode","earliest","latest","rawTime","minimum","maximum","depth","groupOperator"])
+        self.ruleModel=DictListModel(["ruleId","label","mode","name","nameOperator","currencies","impacts","sources","timeMode","earliest","latest","rawTime","minimum","maximum","depth","groupOperator","expanded"])
         self.savedSearchModel=DictListModel(["name"]);self.resultModel=DictListModel(["date","matchedCount","totalCount"]);self.eventModel=DictListModel(["eventKey","sourceId","currency","impact","name","time","actual","forecast","previous","sourceType","matched","rules"])
         self._reload_saved();self.open_database(discover_database(self.settings.value("databasePath"),self.repo_root))
     @Property(bool,notify=stateChanged)
     def isLoading(self):return self.loading
     @Property(bool,notify=stateChanged)
     def resultsCurrent(self):return self._results_current
+    @Property(bool,notify=stateChanged)
+    def resultsStale(self):return self._results_stale
+    @Property(str,notify=stateChanged)
+    def searchState(self):return self._search_state
+    @Property(str,notify=stateChanged)
+    def statusMessage(self):return self._status_message
+    @Property(str,notify=stateChanged)
+    def selectedDate(self):return self.selected or ""
+    @Property(bool,notify=stateChanged)
+    def sidebarVisible(self):return self.settings.value("sidebarVisible",True,type=bool)
+    @Property(int,notify=stateChanged)
+    def sidebarWidth(self):return max(190,min(420,int(self.settings.value("sidebarWidth",250))))
+    @Slot(bool,int)
+    def saveSidebarState(self,visible,width):self.settings.setValue("sidebarVisible",visible);self.settings.setValue("sidebarWidth",width);self.stateChanged.emit()
+    @Property(int,notify=stateChanged)
+    def resultsView(self):return max(0,min(1,int(self.settings.value("resultsView",0))))
+    @Slot(int)
+    def saveResultsView(self,index):self.settings.setValue("resultsView",index);self.stateChanged.emit()
+    @Property(int,notify=stateChanged)
+    def workspaceWidth(self):return max(520,int(self.settings.value("workspaceWidth",680)))
+    @Property(int,notify=stateChanged)
+    def resultsPaneWidth(self):return max(350,int(self.settings.value("resultsPaneWidth",470)))
+    @Slot(int,int)
+    def savePaneWidths(self,workspace,results):self.settings.setValue("workspaceWidth",workspace);self.settings.setValue("resultsPaneWidth",results)
     @Property(str,notify=stateChanged)
     def searchName(self):return self.definition.name
     @Property(str,notify=stateChanged)
@@ -125,12 +154,14 @@ class AppController(QObject):
     def matchedEventCount(self):return sum(r.matched_event_count for r in self.results)
     @Property(int,notify=stateChanged)
     def totalEventCount(self):return sum(len(r.events) for r in self.results)
+    @Property(bool,notify=stateChanged)
+    def hasLastExport(self):return bool(self.last_export)
     @Slot(str,result=bool)
     def open_database(self,path):
         if not path:return False
         self.cancelSearch();self._invalidate_results()
         try:self.reader=DatabaseReader(path);self.facets=self.reader.facets();self.settings.setValue("databasePath",str(self.reader.path));self.stateChanged.emit();return True
-        except Exception as exc:self.reader=None;self.facets={};self.error.emit(str(exc));self.stateChanged.emit();return False
+        except Exception as exc:self.reader=None;self.facets={};self._search_state="error";self._status_message=str(exc);self.error.emit(str(exc));self.stateChanged.emit();return False
     @Slot()
     def chooseDatabase(self):
         path,_=QFileDialog.getOpenFileName(None,"Choose Forex calendar database",self.databasePath or str(Path.home()),"SQLite databases (*.sqlite *.db);;All files (*)")
@@ -146,12 +177,14 @@ class AppController(QObject):
     def _walk(self,node,depth=0):
         out=[]
         for c in node.children:
-            if isinstance(c,RuleGroup):out.append({"ruleId":c.id,"label":"Nested group","depth":depth,"groupOperator":c.operator});out+=self._walk(c,depth+1)
+            if isinstance(c,RuleGroup):
+                expanded=c.id not in self._collapsed_groups;out.append({"ruleId":c.id,"label":"Nested group","depth":depth,"groupOperator":c.operator,"expanded":expanded})
+                if expanded:out+=self._walk(c,depth+1)
             else:out.append({"ruleId":c.id,"label":c.label or c.id,"mode":c.mode,"name":c.name,"nameOperator":c.name_operator,"currencies":", ".join(c.currencies),"impacts":", ".join(c.impacts),"sources":", ".join(c.source_types),"timeMode":c.time_mode,"earliest":c.earliest_time or "","latest":c.latest_time or "","rawTime":c.raw_time,"minimum":c.minimum,"maximum":-1 if c.maximum is None else c.maximum,"depth":depth,"groupOperator":""})
         return out
     def _sync_rules(self):self.ruleModel.reset(self._walk(self.definition.root));self._invalidate_results();self.stateChanged.emit()
     def _invalidate_results(self):
-        self._results_current=False;self.results=[];self.selected=None;self.resultModel.reset([]);self.eventModel.reset([])
+        self._results_stale=self._results_stale or self._results_current;self._results_current=False;self.results=[];self.selected=None;self.resultModel.reset([]);self.eventModel.reset([])
     def _find(self,node,ident):
         for i,c in enumerate(node.children):
             if isinstance(c,RuleGroup) and c.id==ident:return node,i,c
@@ -161,7 +194,7 @@ class AppController(QObject):
                 if found:return found
         return None
     @Slot()
-    def newSearch(self):self.cancelSearch();self.definition=SearchDefinition();self._sync_rules()
+    def newSearch(self):self.cancelSearch();self.definition=SearchDefinition();self._sync_rules();self._results_stale=False;self._search_state="idle";self._status_message="New search";self.stateChanged.emit()
     @Slot(str)
     def setSearchName(self,name):self.definition.name=name.strip() or "Untitled Search";self._invalidate_results();self.stateChanged.emit()
     @Slot()
@@ -187,10 +220,25 @@ class AppController(QObject):
     def duplicateRule(self,ident):
         found=self._find(self.definition.root,ident)
         if found and isinstance(found[2],EventRule):r=copy.deepcopy(found[2]);r.id=str(uuid.uuid4());found[0].children.insert(found[1]+1,r);self._sync_rules()
+    @Slot(str)
+    def duplicateNode(self,ident):
+        found=self._find(self.definition.root,ident)
+        if not found:return
+        node=copy.deepcopy(found[2])
+        def renew(item):
+            item.id=str(uuid.uuid4())
+            if isinstance(item,RuleGroup):
+                for child in item.children:renew(child)
+        renew(node);found[0].children.insert(found[1]+1,node);self._sync_rules()
     @Slot(str,str)
     def updateGroup(self,ident,operator):
         found=self._find(self.definition.root,ident)
         if found and isinstance(found[2],RuleGroup) and operator in {"AND","OR"}:found[2].operator=operator;self._sync_rules()
+    @Slot(str)
+    def toggleGroup(self,ident):
+        if ident in self._collapsed_groups:self._collapsed_groups.remove(ident)
+        else:self._collapsed_groups.add(ident)
+        self.ruleModel.reset(self._walk(self.definition.root));self.stateChanged.emit()
     @Slot(str,str,'QVariant')
     def updateRule(self,ident,key,value):
         found=self._find(self.definition.root,ident)
@@ -228,13 +276,13 @@ class AppController(QObject):
     def validationMessage(self):return "\n".join(validate(self.definition))
     @Slot()
     def runSearch(self):
-        if not self.reader:self.error.emit("Choose a database before searching");return
+        if not self.reader:self._search_state="error";self._status_message="Choose a database before searching";self.error.emit(self._status_message);self.stateChanged.emit();return
+        self._search_state="validating";self._status_message="Validating search definition…";self.stateChanged.emit()
         errors=validate(self.definition)
-        if errors:self.error.emit("\n".join(errors));return
-        self._generation+=1;generation=self._generation;self._cancel.set();self._cancel=Event();cancel=self._cancel;definition=copy.deepcopy(self.definition);path=self.reader.path;self.loading=True;self.stateChanged.emit()
-        thread=QThread();worker=SearchWorker(generation,path,definition,cancel,self._search_worker);worker.moveToThread(thread)
+        if errors:self._search_state="error";self._status_message="\n".join(errors);self.error.emit(self._status_message);self.stateChanged.emit();return
+        self._generation+=1;generation=self._generation;self._cancel.set();self._cancel=Event();cancel=self._cancel;definition=copy.deepcopy(self.definition);path=self.reader.path;self.loading=True;self._search_state="searching";self._status_message="Searching calendar…";self.stateChanged.emit()
+        thread=QThread();worker=SearchWorker(self,generation,path,definition,cancel,self._search_worker);worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.succeeded.connect(self._publish,Qt.QueuedConnection);worker.failed.connect(self._search_failed,Qt.QueuedConnection);worker.cancelled.connect(self._search_cancelled,Qt.QueuedConnection)
         worker.finished.connect(worker.deleteLater);worker.finished.connect(thread.quit,Qt.DirectConnection)
         thread.finished.connect(self._thread_finished,Qt.QueuedConnection)
         self._searches[thread]=(worker,cancel);thread.start()
@@ -243,20 +291,25 @@ class AppController(QObject):
         # Policies inspect the complete event set on each candidate date. Global
         # restrictions are intentionally applied only by the filter engine.
         reader=DatabaseReader(path);events=reader.events(definition.start_date,definition.end_date);return search(events,definition,cancel)
-    @Slot(int,object)
-    def _publish(self,generation,value):
-        if generation!=self._generation:return
+    def event(self,event):
+        if event.type()!=_SEARCH_RESULT_EVENT_TYPE:return super().event(event)
+        # QObject events are delivered according to receiver affinity. Keep this
+        # assertion here because publishing models off-thread is never safe.
+        if QThread.currentThread()!=self.thread():
+            raise RuntimeError("Search result was delivered outside the controller thread")
+        if event.generation!=self._generation:return True
+        if event.outcome=="success":self._publish(event.data)
+        elif event.outcome=="failure":self._search_failed(event.error)
+        else:self._search_cancelled()
+        return True
+    def _publish(self,value):
         self.loading=False
-        self.results=value;self._results_current=True;self.resultModel.reset([{"date":r.date_et,"matchedCount":r.matched_event_count,"totalCount":len(r.events)} for r in value]);self.selectDate(value[0].date_et if value else "");self.searchFinished.emit()
+        self.results=value;self._results_current=True;self._results_stale=False;self._search_state="success" if value else "zero";self._status_message=f"{len(value):,} matching dates" if value else "Search completed with no matching dates";self.resultModel.reset([{"date":r.date_et,"matchedCount":r.matched_event_count,"totalCount":len(r.events)} for r in value]);self.selectDate(value[0].date_et if value else "");self.searchFinished.emit()
         self.stateChanged.emit()
-    @Slot(int,str)
-    def _search_failed(self,generation,message):
-        if generation!=self._generation:return
-        self.loading=False;self.error.emit(message);self.stateChanged.emit()
-    @Slot(int)
-    def _search_cancelled(self,generation):
-        if generation!=self._generation:return
-        self.loading=False;self.stateChanged.emit()
+    def _search_failed(self,message):
+        self.loading=False;self._search_state="error";self._status_message=message;self.error.emit(message);self.stateChanged.emit()
+    def _search_cancelled(self):
+        self.loading=False;self._search_state="cancelled";self._status_message="Search cancelled";self.stateChanged.emit()
     @Slot()
     def _thread_finished(self):
         thread=self.sender()
@@ -264,12 +317,19 @@ class AppController(QObject):
             self._searches.pop(thread)
             thread.deleteLater()
     @Slot()
-    def cancelSearch(self):self._generation+=1;self._cancel.set();self.loading=False;self.stateChanged.emit()
+    def cancelSearch(self):
+        was_loading=self.loading;self._generation+=1;self._cancel.set();self.loading=False
+        if was_loading:self._search_state="cancelled";self._status_message="Search cancelled"
+        self.stateChanged.emit()
+    def searchDiagnostics(self):
+        workers=[pair[0] for pair in self._searches.values()]
+        return {"loading":self.loading,"active_threads":len(self._searches),"workers":[{"started":w.started,"finished":w.completed,"exception":w.exception} for w in workers]}
     @Slot(str)
     def selectDate(self,day):
         result=next((r for r in self.results if r.date_et==day),None);self.selected=day
-        if not result:self.eventModel.reset([]);return
+        if not result:self.eventModel.reset([]);self.stateChanged.emit();return
         matched={k for values in result.matches.values() for k in values};self.eventModel.reset([{"eventKey":e.event_key,"sourceId":e.source_event_id or "","currency":e.currency,"impact":e.impact_color,"name":e.event_name,"time":e.time_et or e.raw_time or "Clockless","actual":e.actual or "","forecast":e.forecast or "","previous":e.previous or "","sourceType":e.source_type,"matched":e.event_key in matched,"rules":", ".join(k for k,v in result.matches.items() if e.event_key in v)} for e in result.events])
+        self.stateChanged.emit()
     def _reload_saved(self):
         searches=self.store.load();self.savedSearchModel.reset([{"name":n} for n in sorted(searches)]);
         if self.store.warning:self.notification.emit(self.store.warning)
@@ -316,7 +376,13 @@ class AppController(QObject):
     @Slot()
     def exportSearch(self):
         path,_=QFileDialog.getSaveFileName(None,"Export search",f"{self.definition.name}.json","JSON (*.json)")
-        if path:Path(path).write_text(json.dumps(self.definition.to_dict(),indent=2));self.last_export=path;self.notification.emit("Search definition exported")
+        if path:Path(path).write_text(json.dumps(self.definition.to_dict(),indent=2));self.last_export=path;self.notification.emit("Search definition exported");self.stateChanged.emit()
+    @Slot(str)
+    def exportSavedSearch(self,name):
+        item=self.store.load().get(name)
+        if not item:return
+        path,_=QFileDialog.getSaveFileName(None,"Export saved search",f"{name}.json","JSON (*.json)")
+        if path:Path(path).write_text(json.dumps(item.to_dict(),indent=2));self.last_export=path;self.notification.emit("Search definition exported");self.stateChanged.emit()
     @Slot(str,str)
     def exportResults(self,format,scope):
         suffix="xlsx" if format=="xlsx" else "csv";path,_=QFileDialog.getSaveFileName(None,"Export results",f"{self.definition.name}.{suffix}",f"{suffix.upper()} (*.{suffix})")
@@ -336,10 +402,18 @@ class AppController(QObject):
         except Exception as exc:self.error.emit(str(exc));return False
     @Slot()
     def copyMatchingDates(self):QGuiApplication.clipboard().setText("\n".join(r.date_et for r in self.results));self.notification.emit("Matching dates copied")
+    @Slot(str)
+    def copyText(self,value):QGuiApplication.clipboard().setText(value);self.notification.emit("Copied to clipboard")
+    @Slot(str)
+    def copyEventDetails(self,event_key):
+        item=next((item for item in self.eventModel.items if item["eventKey"]==event_key),None)
+        if item:self.copyText("\t".join(str(item.get(key,"")) for key in ("time","currency","impact","name","actual","forecast","previous","sourceType","eventKey")))
     @Slot()
     def copySearchDefinition(self):QGuiApplication.clipboard().setText(json.dumps(self.definition.to_dict(),indent=2));self.notification.emit("Search definition copied")
     @Slot()
     def revealExport(self):self._reveal(self.last_export)
+    @Slot()
+    def revealLog(self):self._reveal(self.logPath)
     @Slot()
     def copyDiagnostics(self):QGuiApplication.clipboard().setText(json.dumps(collect(self.reader.metadata() if self.reader else {}),indent=2));self.notification.emit("Diagnostics copied")
     @Slot(result=str)
