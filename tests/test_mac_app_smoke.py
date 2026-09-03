@@ -1,14 +1,19 @@
 import os
 from pathlib import Path
+from threading import Event
 import pytest
 import sqlite3
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 PySide6=pytest.importorskip("PySide6")
-from PySide6.QtCore import QObject,QUrl
+from PySide6.QtCore import QObject,QThread,QUrl,qInstallMessageHandler
 from PySide6.QtWidgets import QApplication,QMessageBox
 from PySide6.QtQml import QQmlApplicationEngine
 from ff_calendar_toolkit.mac_app.controller import AppController
 from PySide6.QtTest import QSignalSpy
+
+def wait_for_signal(spy,timeout=3000):
+    """Wait unless a very fast background operation already emitted."""
+    return len(spy)>0 or spy.wait(timeout)
 
 def make_database(path):
     connection=sqlite3.connect(path)
@@ -20,8 +25,14 @@ def test_real_qml_engine_loads_with_required_context(tmp_path):
     app=QApplication.instance() or QApplication([]);controller=AppController(tmp_path)
     engine=QQmlApplicationEngine();context=engine.rootContext()
     for name,value in {"controller":controller,"ruleModel":controller.ruleModel,"resultModel":controller.resultModel,"eventModel":controller.eventModel,"savedSearchModel":controller.savedSearchModel}.items():context.setContextProperty(name,value)
-    qml=Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml";engine.load(QUrl.fromLocalFile(str(qml)))
-    assert engine.rootObjects() and engine.rootObjects()[0].isVisible();controller.shutdown()
+    messages=[];previous=qInstallMessageHandler(lambda kind,context,message:messages.append(message))
+    try:
+        qml=Path(__file__).parents[1]/"ff_calendar_toolkit/mac_app/qml/Main.qml";engine.load(QUrl.fromLocalFile(str(qml)))
+        app.processEvents()
+    finally:qInstallMessageHandler(previous)
+    assert engine.rootObjects() and engine.rootObjects()[0].isVisible()
+    assert not [message for message in messages if "Main.qml" in message]
+    controller.shutdown()
 
 def test_controller_rule_and_saved_search_actions(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"))
@@ -31,8 +42,10 @@ def test_controller_exact_search_uses_complete_date_and_state_sync(tmp_path,monk
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database)
     c=AppController(tmp_path);assert c.open_database(str(database));assert c.currencies==["Currency A","Currency B"] and "2 events" in c.databaseSummary
     c.addRule();rule=c.ruleModel.items[0]["ruleId"];c.updateRule(rule,"currencies","Currency A");c.setGlobal("currencies","Currency A");c.setPolicy("Exact event set")
-    spy=QSignalSpy(c.searchFinished);c.runSearch();assert spy.wait(3000);assert c.resultCount==0 and c.resultsCurrent
-    c.setPolicy("Allow additional events");assert not c.resultsCurrent;spy=QSignalSpy(c.searchFinished);c.runSearch();assert spy.wait(3000);assert c.resultCount==1
+    completion_threads=[];c.searchFinished.connect(lambda:completion_threads.append(QThread.currentThread()))
+    spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert c.resultCount==0 and c.resultsCurrent
+    assert completion_threads[-1]==c.thread() and c.thread()==app.thread()
+    c.setPolicy("Allow additional events");assert not c.resultsCurrent;spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert c.resultCount==1
     c.setSearchName("Alpha");c.saveSearch();c.newSearch();assert c.searchName=="Untitled Search";c.loadSearch("Alpha");assert c.searchName=="Alpha" and c.globalCurrencies=="Currency A"
     c.setGlobal("impacts","red");assert not c.resultsCurrent and c.resultCount==0;c.shutdown()
 
@@ -58,7 +71,25 @@ def test_oldest_saved_search_executes_oldest_first(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database)
     connection=sqlite3.connect(database);connection.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",("c","Event Alpha","event alpha","Currency A","red","2025-01-07","09:00",None,"fixture","c",None,None,None));connection.commit();connection.close()
     c=AppController(tmp_path);c.open_database(str(database));c.addRule();c.setSort("Oldest first");c.saveSearchAs("Oldest");c.newSearch();c.loadSearch("Oldest");assert c.resultSort=="oldest"
-    spy=QSignalSpy(c.searchFinished);c.runSearch();assert spy.wait(3000);assert [item["date"] for item in c.resultModel.items]==["2025-01-06","2025-01-07"];c.shutdown()
+    spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy);assert [item["date"] for item in c.resultModel.items]==["2025-01-06","2025-01-07"];c.shutdown()
+
+def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database)
+    c=AppController(tmp_path);c.open_database(str(database));c.addRule()
+    original=c._search_worker;old_started=Event();release_old=Event()
+    def controlled_worker(path,definition,cancel):
+        if definition.name=="Old search":
+            old_started.set();release_old.wait(3)
+        return original(path,definition,cancel)
+    monkeypatch.setattr(c,"_search_worker",controlled_worker)
+    c.setSearchName("Old search");c.runSearch();assert old_started.wait(1)
+    c.setSearchName("New search");spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy)
+    assert c.resultsCurrent and c.resultCount==1
+    published=list(c.resultModel.items);release_old.set()
+    # Executor completion is handed to Qt without sleeps; shutdown waits for the
+    # old task, then processing events exercises stale-generation suppression.
+    c.pool.shutdown(wait=True);app.processEvents()
+    assert list(c.resultModel.items)==published and len(spy)==1
 
 def test_event_name_combo_accepts_typed_and_suggested_values(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr("ff_calendar_toolkit.mac_app.controller.QStandardPaths.writableLocation",lambda *_:str(tmp_path/"support"));database=tmp_path/"calendar.sqlite";make_database(database);c=AppController(tmp_path);c.open_database(str(database));c.addRule()

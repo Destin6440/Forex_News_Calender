@@ -60,8 +60,23 @@ ApplicationWindow {
        TextField{id:startField;placeholderText:"Start date YYYY-MM-DD";text:controller.startDate;Layout.fillWidth:true;onEditingFinished:controller.setGlobal("start_date",text)} TextField{id:endField;placeholderText:"End date YYYY-MM-DD";text:controller.endDate;Layout.fillWidth:true;onEditingFinished:controller.setGlobal("end_date",text)}
        MultiSelect{options:controller.currencies;selectedText:controller.globalCurrencies;onSelectionChanged:value=>controller.setGlobal("currencies",value)} MultiSelect{options:controller.impacts;selectedText:controller.globalImpacts;onSelectionChanged:value=>controller.setGlobal("impacts",value)}
        MultiSelect{options:controller.sources;selectedText:controller.globalSources;onSelectionChanged:value=>controller.setGlobal("source_types",value)} MultiSelect{options:controller.currencies;selectedText:controller.countedCurrencies;onSelectionChanged:value=>controller.setGlobal("counted_currencies",value)}
-       MultiSelect{options:controller.impacts;selectedText:controller.countedImpacts;onSelectionChanged:value=>controller.setGlobal("counted_impacts",value)} TextField{id:minimumField;placeholderText:"Minimum total events (0)";text:String(controller.minimumEvents);Layout.fillWidth:true;validator:IntValidator{bottom:0};onEditingFinished:controller.setGlobal("minimum_events",text)}
-       TextField{id:maximumField;placeholderText:"Maximum total events (none)";text:controller.maximumEvents<0?"":String(controller.maximumEvents);Layout.fillWidth:true;validator:IntValidator{bottom:0};onEditingFinished:controller.setGlobal("maximum_events",text)}
+       MultiSelect{options:controller.impacts;selectedText:controller.countedImpacts;onSelectionChanged:value=>controller.setGlobal("counted_impacts",value)}
+       TextField {
+        id: minimumField
+        placeholderText: "Minimum total events (0)"
+        text: String(controller.minimumEvents)
+        Layout.fillWidth: true
+        validator: IntValidator { bottom: 0 }
+        onEditingFinished: controller.setGlobal("minimum_events", text)
+       }
+       TextField {
+        id: maximumField
+        placeholderText: "Maximum total events (none)"
+        text: controller.maximumEvents < 0 ? "" : String(controller.maximumEvents)
+        Layout.fillWidth: true
+        validator: IntValidator { bottom: 0 }
+        onEditingFinished: controller.setGlobal("maximum_events", text)
+       }
       }
       RowLayout{Label{text:"Weekdays";font.bold:true}Repeater{model:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];CheckBox{required property int index;required property string modelData;text:modelData;checked:controller.weekdays.indexOf(index)>=0;onToggled:controller.toggleWeekday(index,checked)}}}
       Label{text:controller.validationMessage();visible:text!=="";color:"#fb7185";wrapMode:Text.Wrap;Layout.fillWidth:true}Item{height:16}
