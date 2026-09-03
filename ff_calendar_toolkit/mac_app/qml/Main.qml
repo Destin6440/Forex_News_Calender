@@ -37,7 +37,8 @@ ApplicationWindow {
    }}
    SplitView { Layout.fillWidth:true;Layout.fillHeight:true
     ScrollView { SplitView.fillWidth:true;SplitView.minimumWidth:650
-     ColumnLayout { width:parent.width;leftPadding:18;rightPadding:18;topPadding:18;spacing:12
+     Item { width:parent.width;implicitHeight:builderLayout.implicitHeight+36
+     ColumnLayout { id:builderLayout;x:18;y:18;width:parent.width-36;spacing:12
       RowLayout { Label{text:"Rule Builder";font.pixelSize:22;font.bold:true} Item{Layout.fillWidth:true} ComboBox{model:["AND","OR"];currentIndex:model.indexOf(controller.rootOperator);onActivated:controller.setRootOperator(currentText)} }
       Label{text:"Currency, impact, source, and event suggestions come from the selected database.";color:"#93a4b8"}
       ListView { Layout.fillWidth:true;implicitHeight:Math.max(150,contentHeight);model:ruleModel;interactive:false;spacing:10
@@ -80,6 +81,7 @@ ApplicationWindow {
       }
       RowLayout{Label{text:"Weekdays";font.bold:true}Repeater{model:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];CheckBox{required property int index;required property string modelData;text:modelData;checked:controller.weekdays.indexOf(index)>=0;onToggled:controller.toggleWeekday(index,checked)}}}
       Label{text:controller.validationMessage();visible:text!=="";color:"#fb7185";wrapMode:Text.Wrap;Layout.fillWidth:true}Item{height:16}
+     }
      }
     }
     Card { SplitView.preferredWidth:470;SplitView.minimumWidth:380;radius:0
