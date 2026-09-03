@@ -20,6 +20,13 @@ def main(argv=None):
     if not engine.rootObjects(): return 1
     if not controller.databasePath:
         QTimer.singleShot(0, controller.chooseDatabase)
-    app.aboutToQuit.connect(controller.shutdown);return app.exec()
+    exit_code=app.exec()
+    # Context properties must outlive every binding that uses them. Destroying
+    # the engine synchronously tears down its root window before the controller.
+    for root in engine.rootObjects():root.close()
+    del engine
+    controller.shutdown()
+    del controller
+    return exit_code
 
 if __name__=="__main__": raise SystemExit(main())

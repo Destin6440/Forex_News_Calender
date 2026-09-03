@@ -19,7 +19,7 @@ ApplicationWindow {
  Dialog { id:exports; title:"Export results"; modal:true; standardButtons:Dialog.Close
   ColumnLayout { ComboBox{id:scope;model:["all_events","matched_events","matching_dates"]} RowLayout{Button{text:"Export CSV";onClicked:controller.exportResults("csv",scope.currentText)} Button{text:"Export XLSX";onClicked:controller.exportResults("xlsx",scope.currentText)}} Button{text:"Copy Matching Dates";onClicked:controller.copyMatchingDates()} Button{text:"Copy Search Definition";onClicked:controller.copySearchDefinition()} Button{text:"Reveal Last Export";onClicked:controller.revealExport()} }
  }
- Shortcut { sequence:StandardKey.New; onActivated:controller.newSearch() } Shortcut { sequence:StandardKey.Save;onActivated:controller.saveSearch()} Shortcut { sequence:StandardKey.Refresh;onActivated:controller.refreshDatabase()} Shortcut { sequence:"Ctrl+E";onActivated:exports.open()} Shortcut { sequence:StandardKey.Cancel;onActivated:controller.cancelSearch()} Shortcut { sequence:"Ctrl+Return";onActivated:controller.runSearch()}
+ Shortcut { sequences:[StandardKey.New]; onActivated:controller.newSearch() } Shortcut { sequences:[StandardKey.Save];onActivated:controller.saveSearch()} Shortcut { sequences:[StandardKey.Refresh];onActivated:controller.refreshDatabase()} Shortcut { sequence:"Ctrl+E";onActivated:exports.open()} Shortcut { sequences:[StandardKey.Cancel];onActivated:controller.cancelSearch()} Shortcut { sequence:"Ctrl+Return";onActivated:controller.runSearch()}
  component Card: Rectangle { color:"#111b2b";radius:10;border.color:"#26364d" }
  RowLayout { anchors.fill:parent; spacing:0
   Rectangle { Layout.preferredWidth:260;Layout.fillHeight:true;color:"#0c1626";border.color:"#26364d"

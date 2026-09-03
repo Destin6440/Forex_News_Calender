@@ -3,7 +3,9 @@ from pathlib import Path
 from threading import Event
 import pytest
 import sqlite3
-os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
+os.environ["QT_QPA_PLATFORM"]="offscreen"
+os.environ["QT_QUICK_CONTROLS_STYLE"]="Basic"
+os.environ["QT_QUICK_BACKEND"]="software"
 PySide6=pytest.importorskip("PySide6")
 from PySide6.QtCore import QObject,QThread,QUrl,qInstallMessageHandler
 from PySide6.QtWidgets import QApplication,QMessageBox
@@ -88,9 +90,9 @@ def test_stale_cancelled_search_cannot_replace_newer_results(tmp_path,monkeypatc
     c.setSearchName("New search");spy=QSignalSpy(c.searchFinished);c.runSearch();assert wait_for_signal(spy)
     assert c.resultsCurrent and c.resultCount==1
     published=list(c.resultModel.items);release_old.set()
-    # Executor completion is handed to Qt without sleeps; shutdown waits for the
-    # old task, then processing events exercises stale-generation suppression.
-    c.pool.shutdown(wait=True);app.processEvents()
+    # Release the old worker and wait through the controller's deterministic
+    # QThread shutdown, then process its queued stale completion.
+    c.shutdown();app.processEvents()
     assert list(c.resultModel.items)==published and spy.count()==1
 
 def test_event_name_combo_accepts_typed_and_suggested_values(tmp_path,monkeypatch):
