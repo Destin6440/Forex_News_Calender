@@ -11,6 +11,12 @@ env/
 news/
 state/
 data/
+dist/
+build/
+*.app/
+*.icns
+*.log
+.nuitka/
 # Explicitly document that persistent interactive-browser credentials are local only.
 data/chrome-profile/
 data/chrome-handoff-profile/

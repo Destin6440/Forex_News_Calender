@@ -1,5 +1,33 @@
 # Forex Factory Calendar Database
 
+## Forex Calendar Lab (native macOS)
+
+Forex Calendar Lab is an offline, generic historical-calendar rule builder. It starts empty and assigns no special importance to any currency or event. Install the optional desktop dependencies and launch it with:
+
+```bash
+python -m pip install -r requirements-macos.txt
+python -m ff_calendar_toolkit.cli desktop
+```
+
+The application discovers a validated database in this order: the last explicitly selected path, `FF_CALENDAR_DB`, the active repository's `data/forex_factory.sqlite`, and `~/Forex_News_Calender/data/forex_factory.sqlite`; otherwise it asks the user to choose one. Its dedicated reader opens SQLite with `mode=ro`, enables `PRAGMA query_only`, and never creates, migrates, repairs, deduplicates, or writes calendar data. Refresh invalidates metadata and subsequent worker searches use fresh connections, which makes external synchronization visible.
+
+### Filters and deterministic semantics
+
+The versioned JSON schema (`schema_version: 1`) contains global ET date/weekday, currency, impact, source, event-count, and sorting options plus nested AND/OR groups. Required rules must meet their occurrence bounds; optional rules highlight matches without deciding the date; excluded matches always reject a date. Name operators are case-insensitive contains, exact, starts-with, ends-with, and validated regular expression. Rules cover time ranges, timed/clockless modes, raw clockless labels, and preserve every distinct `event_key` and original clockless label.
+
+Additional-event policies are **Allow additional events** (unmatched events are allowed), **Only within counted scope** (unmatched events in configured counted currencies/impacts reject), and **Exact event set** (every event must match). Every accepted result retains all events on its Eastern date.
+
+Saved searches and rotating logs live outside the repository in Qt's application-support location. Malformed saved-search files are quarantined. CSV and XLSX exports support dates, matched events, or all events and escape formula-like text; XLSX workbooks contain Matches, Events, and Search Definition sheets.
+
+### macOS package
+
+```bash
+./scripts/build_macos_app.sh
+open "dist/Forex Calendar Lab.app"
+```
+
+The idempotent script uses official `pyside6-deploy`, builds for the current Mac architecture, creates `dist/Forex Calendar Lab.app`, and ad-hoc signs and verifies it when `codesign` is available. It does not bundle databases, exports, tests, settings, or logs. A personal local build is not Developer ID signed or notarized; on first launch use Finder's **Open** command if macOS requests confirmation. Move the resulting app to `/Applications` normally. Do not disable Gatekeeper. If startup fails, verify Python 3.11+, reinstall `requirements-macos.txt`, confirm the database schema, and inspect the local application log.
+
 A local-first, repeatable calendar ingestion toolkit based on **fizahkhalid/forex_factory_calendar_news_scraper**. It builds a canonical SQLite database for research and backtesting; it does not execute trades. The original MIT license and attribution are preserved in [`LICENSE`](LICENSE).
 
 ## Coverage and provenance
