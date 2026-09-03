@@ -23,10 +23,16 @@ def wait_for_signal(spy,controller,timeout=3000):
 def qml_scene(controller):
     """Keep QML message capture active until the object tree is gone."""
     messages=[]
-    previous=qInstallMessageHandler(lambda kind,context,message:messages.append(message))
+    def capture_message(kind,context,message):
+        location=f"{context.file}:{context.line}: " if context.file else ""
+        messages.append(f"{location}{message}")
+    previous=qInstallMessageHandler(capture_message)
     engine=root=None
     try:
-        engine,root=create_engine(controller)
+        try:
+            engine,root=create_engine(controller)
+        except Exception as error:
+            pytest.fail(f"QML engine creation failed: {error!r}; captured Qt messages: {messages!r}")
         yield engine,root
     finally:
         try:
@@ -37,7 +43,8 @@ def qml_scene(controller):
                 QApplication.instance().processEvents()
             finally:
                 qInstallMessageHandler(previous)
-    bad=[m for m in messages if "Main.qml" in m or "controller is null" in m or "QThread: Destroyed" in m or "shortcut" in m.lower()]
+    qml_directory=str(Path(__file__).parents[1]/"ff_calendar_toolkit"/"mac_app"/"qml").replace("\\","/")+"/"
+    bad=[m for m in messages if qml_directory in m.replace("\\","/") or "controller is null" in m or "QThread: Destroyed" in m or "shortcut" in m.lower()]
     assert not bad, f"QML loading/teardown warnings: {bad!r}"
 
 def make_database(path):

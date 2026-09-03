@@ -37,16 +37,16 @@ ApplicationWindow {
     Action{id:saveAction;text:"Save";shortcut:StandardKey.Save;onTriggered:controller.saveSearch()}
     Action{id:saveAsAction;text:"Save As…";shortcut:StandardKey.SaveAs;onTriggered:saveAsDialog.open()}
     Action{id:importAction;text:"Import Search Definition…";shortcut:StandardKey.Open;onTriggered:controller.importSearch()}
-    Action{id:copyAction;text:"Copy Search Definition";shortcut:StandardKey.Copy;onTriggered:controller.copySearchDefinition()}
-    Action{id:deleteAction;text:"Delete Selected Rule or Group";shortcut:StandardKey.Delete;enabled:root.selectedRule!=="";onTriggered:controller.removeNode(root.selectedRule)}
+    Action{id:copyAction;text:"Copy Search Definition";shortcut:"Ctrl+Shift+C";onTriggered:controller.copySearchDefinition()}
+    Action{id:deleteAction;text:"Delete Selected Rule or Group";enabled:root.selectedRule!=="";onTriggered:controller.removeNode(root.selectedRule)}
     Action{id:helpAction;text:"Forex Calendar Lab Help";shortcut:StandardKey.HelpContents;onTriggered:about.open()}
     Action{id:settingsAction;text:"Settings…";shortcut:StandardKey.Preferences;onTriggered:settingsDialog.open()}
     Action{id:quitAction;text:"Quit Forex Calendar Lab";shortcut:StandardKey.Quit;onTriggered:Qt.quit()}
     menuBar:MenuBar{
-        Menu{title:"Forex Calendar Lab";MenuItem{text:"About Forex Calendar Lab";onTriggered:about.open()}MenuItem{action:settingsAction}MenuSeparator{}MenuItem{text:"Hide Forex Calendar Lab";onTriggered:root.showMinimized()}MenuSeparator{}MenuItem{action:quitAction}}
+        Menu{title:"Forex Calendar Lab";MenuItem{text:"About Forex Calendar Lab";onTriggered:about.open()}MenuItem{action:settingsAction}MenuSeparator{}MenuItem{text:"Minimize";onTriggered:root.showMinimized()}MenuSeparator{}MenuItem{action:quitAction}}
         Menu{title:"File";MenuItem{action:newAction}MenuSeparator{}MenuItem{action:saveAction}MenuItem{action:saveAsAction}MenuSeparator{}MenuItem{action:importAction}MenuItem{text:"Export Search Definition…";onTriggered:controller.exportSearch()}MenuItem{text:"Export Results…";enabled:controller.resultsCurrent;onTriggered:exportDialog.open()}MenuSeparator{}MenuItem{text:"Choose Database…";onTriggered:controller.chooseDatabase()}}
         Menu{title:"Edit";MenuItem{text:"Duplicate Selected Rule or Group";enabled:root.selectedRule!=="";onTriggered:controller.duplicateNode(root.selectedRule)}MenuItem{action:deleteAction}MenuSeparator{}MenuItem{action:copyAction}}
-        Menu{title:"View";MenuItem{text:root.sidebarShown?"Hide Sidebar":"Show Sidebar";onTriggered:{root.sidebarShown=!root.sidebarShown;controller.saveSidebarState(root.sidebarShown,sidebar.userWidth)}}MenuItem{text:"List View";onTriggered:controller.saveResultsView(0)}MenuItem{text:"Calendar View";onTriggered:controller.saveResultsView(1)}MenuSeparator{}MenuItem{text:"Reset Pane Layout";onTriggered:{sidebar.userWidth=250;workspace.SplitView.preferredWidth=680;results.SplitView.preferredWidth=470;controller.saveSidebarState(root.sidebarShown,250);controller.savePaneWidths(680,470)}}}
+        Menu{title:"View";MenuItem{text:root.sidebarShown?"Hide Sidebar":"Show Sidebar";onTriggered:{root.sidebarShown=!root.sidebarShown;controller.saveSidebarState(root.sidebarShown,sidebar.userWidth)}}MenuItem{text:"List View";onTriggered:controller.saveResultsView(0)}MenuItem{text:"Grid View";onTriggered:controller.saveResultsView(1)}MenuSeparator{}MenuItem{text:"Reset Pane Layout";onTriggered:{sidebar.userWidth=250;workspace.SplitView.preferredWidth=680;results.SplitView.preferredWidth=470;controller.saveSidebarState(root.sidebarShown,250);controller.savePaneWidths(680,470)}}}
         Menu{title:"Help";MenuItem{action:helpAction}MenuItem{text:"Copy Diagnostics";onTriggered:controller.copyDiagnostics()}MenuItem{text:"Reveal Log";onTriggered:controller.revealLog()}}
     }
     header:AppToolbar{onSaveAsRequested:saveAsDialog.open();onExportRequested:exportDialog.open()}
