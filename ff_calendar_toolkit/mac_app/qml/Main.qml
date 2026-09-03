@@ -23,7 +23,23 @@ ApplicationWindow {
         function onNotification(message){announcement.text=message;announcement.visible=true;announcementTimer.restart()}
     }
     Timer{id:announcementTimer;interval:4000;onTriggered:announcement.visible=false}
-    Label{id:announcement;visible:false;z:100;anchors.horizontalCenter:parent.horizontalCenter;anchors.bottom:parent.bottom;anchors.bottomMargin:DesignTokens.section;padding:DesignTokens.spaceLarge;text:"";color:DesignTokens.success;background:Rectangle{color:DesignTokens.surface;radius:DesignTokens.radius;border.color:DesignTokens.success};Accessible.name:text}
+    Label {
+        id: announcement
+        visible: false
+        z: 100
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: DesignTokens.section
+        padding: DesignTokens.spaceLarge
+        text: ""
+        color: DesignTokens.success
+        background: Rectangle {
+            color: DesignTokens.surface
+            radius: DesignTokens.radius
+            border.color: DesignTokens.success
+        }
+        Accessible.name: text
+    }
     MessageDialog{id:errorDialog;title:"Forex Calendar Lab"}
     Dialog{id:about;title:"About Forex Calendar Lab";standardButtons:Dialog.Ok;width:520;contentItem:TextArea{text:"Forex Calendar Lab\n\nOffline, read-only historical calendar analysis.\n\n"+controller.diagnostics();readOnly:true;wrapMode:TextEdit.Wrap}}
     Dialog{id:settingsDialog;title:"Settings";modal:true;width:620;standardButtons:Dialog.Close;ColumnLayout{Label{text:"Database path";font.bold:true}Label{text:controller.databasePath||"None selected";wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Button{text:"Choose Database…";onClicked:controller.chooseDatabase()}Label{text:"Application support";font.bold:true}Label{text:controller.applicationSupportPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}Label{text:"Application log";font.bold:true}Label{text:controller.logPath;wrapMode:Text.WrapAnywhere;Layout.fillWidth:true}}}
